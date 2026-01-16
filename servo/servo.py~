@@ -1,0 +1,144 @@
+import logging
+import logging.handlers
+import multiprocessing
+import time
+import traceback
+import psutil
+
+import ircam
+import core
+import viewer
+
+
+def listener_configurer():
+    root = logging.getLogger()
+    h = logging.handlers.RotatingFileHandler('mptest.log', 'a', backupCount=5)
+    f = logging.Formatter('%(asctime)s %(processName)-10s %(name)s %(levelname)-8s %(message)s')
+    h.setFormatter(f)
+    root.addHandler(h)
+
+    # define a Handler which writes INFO messages or higher to the sys.stderr
+    console = logging.StreamHandler()
+    console.setLevel(logging.INFO)
+    # set a format which is simpler for console use
+    formatter = logging.Formatter('%(name)-12s: %(levelname)-8s %(message)s')
+    # tell the handler to use this format
+    console.setFormatter(formatter)
+    # add the handler to the root logger
+    root.addHandler(console)
+
+
+# This is the listener process top-level loop: wait for logging events
+# (LogRecords)on the queue and handle them, quit when you get a None for a
+# LogRecord.
+def listener_process(queue, configurer, priority=None):
+
+    logger = logging.getLogger()
+    if priority is not None:
+        try:
+            psutil.Process().nice(priority)  # privilégier uniquement ce worker
+        except psutil.AccessDenied:
+            logger.warning("Nice: access denied")
+
+    configurer()
+    while True:
+        try:
+            record = queue.get()
+            if record is None:  # We send this as a sentinel to tell the listener to quit.
+                break
+            logger = logging.getLogger(record.name)
+            logger.handle(record)  # No level or filter logic applied - just do it!
+        except Exception:
+            import sys, traceback
+            print('Error in log listener:', file=sys.stderr)
+            traceback.print_exc(file=sys.stderr)
+
+
+def worker_configurer(queue):
+    h = logging.handlers.QueueHandler(queue)
+    root = logging.getLogger()
+    root.addHandler(h)
+    root.setLevel(logging.DEBUG)
+
+
+def worker_process(queue, configurer, data, WorkerClass, priority=None):
+
+    logger = logging.getLogger()
+    if priority is not None:
+        try:
+            psutil.Process().nice(priority)  # privilégier uniquement ce worker
+        except psutil.AccessDenied:
+            logger.warning("Nice: access denied")
+
+    
+    configurer(queue)
+    name = str(WorkerClass).split("'")[1].split(".")[0]
+    process_name = multiprocessing.current_process().name
+    logger.info(f'{name} ({process_name}) started')
+    try:
+        worker = WorkerClass(data)
+        worker.run()
+    except Exception as e:
+        logger.error(traceback.format_exc())
+
+    worker.stop()
+
+
+def main():
+    logger = logging.getLogger()
+    
+    try:
+        psutil.Process().nice(0)  # privilégier uniquement ce worker
+    except psutil.AccessDenied:
+        logger.warning('priority of the process could not be changed (Acces Denied)')
+        
+    queue = multiprocessing.Queue(-1)
+    listener = multiprocessing.Process(target=listener_process,
+                                       args=(queue, listener_configurer, 10))
+    listener.start()
+
+    data = core.SharedData()
+    
+    ## start all threads
+    workers = list()
+
+    
+    # start ir camera
+    ircam_worker = multiprocessing.Process(target=worker_process,
+                                           args=(queue, worker_configurer,
+                                                 data, ircam.IRCamera, -20))
+    workers.append(ircam_worker)
+    ircam_worker.start()
+
+    while True:
+        time.sleep(0.1)
+        if data['IRCamera.initialized'][0]: break
+        
+    # start viewer
+    viewer_worker = multiprocessing.Process(target=worker_process,
+                                            args=(queue, worker_configurer,
+                                                  data, viewer.Viewer, 10))
+    workers.append(viewer_worker)
+    viewer_worker.start()
+
+
+
+    ###################
+    #### transformer ça en un processus avec un bouton qui attend qu'on clique stop
+    #### le mieux c'est de construire la classe d'interface avec matplotlib qui contiendra tout ça 
+    ###################
+    input('press any key to exit\n')
+
+    
+    for w in workers:
+        w.terminate()
+
+    for w in workers:
+        w.join()
+        
+    queue.put_nowait(None)
+    listener.join()
+
+if __name__ == '__main__':
+    main()
+

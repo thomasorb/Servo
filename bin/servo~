@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+
+# Resolve absolute path of this script
+SCRIPT_DIR="$(cd -- "$(dirname -- "$0")" && pwd)"
+
+# Build absolute path to run_servo.py
+TARGET="$SCRIPT_DIR/run_servo.py"
+
+# Activer l'environnement conda
+source /home/thomas/miniconda3/bin/activate servo
+
+# Run it with highest priority using the system python
+sudo nice -n -20 "$(which python)" "$TARGET" "$@"
+

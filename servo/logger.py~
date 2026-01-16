@@ -1,0 +1,95 @@
+import logging
+import logging.handlers
+import multiprocessing
+import os
+import sys
+import uuid
+import time
+
+LOG_FILE = "/tmp/servo.log"
+
+# Colors for console output
+COLORS = {
+    "DEBUG": "\033[94m",
+    "INFO": "\033[92m",
+    "WARNING": "\033[93m",
+    "ERROR": "\033[91m",
+    "CRITICAL": "\033[95m",
+}
+RESET = "\033[0m"
+
+
+class ColorFormatter(logging.Formatter):
+    def format(self, record):
+        level = record.levelname
+        if level in COLORS:
+            record.msg = f"{COLORS[level]}{record.msg}{RESET}"
+        return super().format(record)
+
+
+def init_logging(level="INFO"):
+    """
+    Initialize a robust multiprocess logging system.
+
+    Safe to call from any module. Calling multiple times does nothing.
+    """
+    root = logging.getLogger()
+
+    # Avoid duplicate initializations
+    if getattr(root, "_servo_logging_initialized", False):
+        return
+
+    root._servo_logging_initialized = True
+    root.setLevel(level)
+
+    # Shared queue for ALL processes
+    root.queue = multiprocessing.Queue()
+
+    # Formatter (no colors in file)
+    file_formatter = logging.Formatter(
+        "%(asctime)s [%(levelname)s] (%(processName)s) (%(name)s) %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+
+    # File handler
+    os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
+    file_handler = logging.FileHandler(LOG_FILE, mode="a", encoding="utf-8")
+    file_handler.setFormatter(file_formatter)
+
+    # Console handler (with colors)
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setFormatter(
+        ColorFormatter("[%(levelname)s] %(message)s")
+    )
+
+    # Queue Listener (background thread writing to file + console)
+    root.listener = logging.handlers.QueueListener(
+        root.queue, file_handler, console_handler, respect_handler_level=True
+    )
+    root.listener.start()
+
+    # Queue handler for all loggers
+    queue_handler = logging.handlers.QueueHandler(root.queue)
+    root.addHandler(queue_handler)
+
+    # UUID de session
+    root.session_id = uuid.uuid4().hex[:8]
+    root.info(f"=== Servo Session {root.session_id} started ===")
+
+    # Redirect stdout/stderr to logger
+    sys.stdout = StreamToLogger(logging.getLogger("stdout"), logging.INFO)
+    sys.stderr = StreamToLogger(logging.getLogger("stderr"), logging.ERROR)
+
+
+class StreamToLogger:
+    """Redirect print() and errors to the main logging system."""
+    def __init__(self, logger, level):
+        self.logger = logger
+        self.level = level
+
+    def write(self, message):
+        if message.strip():
+            self.logger.log(self.level, message.strip())
+
+    def flush(self):
+        pass

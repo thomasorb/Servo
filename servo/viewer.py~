@@ -1,0 +1,175 @@
+
+import numpy as np
+import tkinter as tk
+from tkinter import ttk
+from PIL import Image, ImageTk
+import csv
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+import json
+from pathlib import Path
+
+from . import core
+from . import config  # kept if you rely on it elsewhere
+
+class Viewer(core.Worker):
+    """
+    Tkinter-based scientific viewer with:
+    - Zoom/pan
+    - ROI tool (CTRL+Drag)
+    - Line profile tool (SHIFT+Drag)
+    - Adjustable LUTs
+    - Histogram window
+    - Export to PNG
+    - Right-side panel with Piezos (OPD, DA-1, DA-2) scales
+    - Graceful shutdown via stop_event
+    """
+
+    # ------------------------------------------------------------------
+    # Initialization
+    # ------------------------------------------------------------------
+    def __init__(self, data, stop_event=None):
+        self.data = data
+        self.stop_event = stop_event  # graceful termination signal
+
+        # --- Root window
+        self.root = tk.Tk()
+        self.root.title("IRCamera Viewer")
+
+        # --- Initial size and constraints
+        self.root.geometry("1280x800")
+        self.root.minsize(900, 600)
+
+        # Load previous window size/position/state if any
+        self.load_window_geometry()
+        self.root.protocol("WM_DELETE_WINDOW", self.on_close)
+
+        # --- Fonts and ttk theme
+        self.root.option_add("*Font", ("Noto Sans", 14))
+        self.root.tk.call("tk", "scaling", 1.0)
+
+        style = ttk.Style(self.root)
+        style.configure(".", font=("Noto Sans", 14))
+        style.theme_use("clam")
+
+        # ------------------------------------------------------------------
+        # Image dimensions (from shared data)
+        # ------------------------------------------------------------------
+        self.img_w = self.data['IRCamera.frame_dimx'][0]
+        self.img_h = self.data['IRCamera.frame_dimy'][0]
+
+        # Initial frame (float32)
+        self.frame = self.generate_frame()
+
+        # ------------------------------------------------------------------
+        # Brightness / Contrast (DS9-style)
+        # ------------------------------------------------------------------
+        self.brightness = 0.0
+        self.contrast = 1.0
+        self.last_bc_mouse = None
+
+        # ------------------------------------------------------------------
+        # LUT
+        # ------------------------------------------------------------------
+        self.current_lut_name = "gray"
+        self.lut = self.build_lut_gray()
+
+        # ------------------------------------------------------------------
+        # Main layout: left = canvas, right = controls (piezos)
+        # ------------------------------------------------------------------
+        main_frame = ttk.Frame(self.root)
+        main_frame.pack(fill=tk.BOTH, expand=True)
+
+        # Left: canvas (image + overlays)
+        self.canvas = tk.Canvas(main_frame, bg="black")
+        self.canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        # Right: controls
+        right_panel = ttk.Frame(main_frame)
+        right_panel.pack(side=tk.RIGHT, fill=tk.Y, padx=6, pady=6)
+
+        # --- Piezos frame (LabelFrame) with 3 side-by-side vertical Scales
+        self._build_piezos_controls(parent=right_panel)
+
+        # Ensure the first render happens after geometry is realized
+        self.root.after_idle(lambda: self.on_resize(None))
+        self.tk_image = None
+        self.image_id = None
+
+        # ------------------------------------------------------------------
+        # Zoom & Pan
+        # ------------------------------------------------------------------
+        self.scale = 1.0
+        self.offset_x = 0.0
+        self.offset_y = 0.0
+        self.fitted = False
+
+        # ------------------------------------------------------------------
+        # Overlays: crosshair, markers
+        # ------------------------------------------------------------------
+        self.cross_h = self.canvas.create_line(0, 0, 0, 0, fill="yellow")
+        self.cross_v = self.canvas.create_line(0, 0, 0, 0, fill="yellow")
+        self.canvas.tag_raise(self.cross_h)
+        self.canvas.tag_raise(self.cross_v)
+
+        # Markers = list of (item_id, ix, iy) in image coordinates
+        self.points = []
+
+        # ------------------------------------------------------------------
+        # Toolbar (below canvas)
+        # ------------------------------------------------------------------
+        toolbar = ttk.Frame(self.root)
+        toolbar.pack(fill=tk.X, pady=3)
+
+        ttk.Label(toolbar, text="LUT:").pack(side=tk.LEFT, padx=5)
+        self.lut_var = tk.StringVar(value="gray")
+        lut_choices = ["gray", "viridis", "inferno", "magma", "plasma", "cividis", "turbo", "rainbow"]
+        self.lut_menu = ttk.Combobox(toolbar, textvariable=self.lut_var, values=lut_choices,
+                                     state="readonly", width=10)
+        self.lut_menu.pack(side=tk.LEFT, padx=5)
+        self.lut_menu.bind("<<ComboboxSelected>>", self.on_lut_changed)
+
+        # Histogram toggle
+        self.hist_btn = ttk.Button(toolbar, text="Show Histogram", command=self.toggle_histogram)
+        self.hist_btn.pack(side=tk.RIGHT, padx=10)
+
+        # Reset zoom
+        self.reset_btn = ttk.Button(toolbar, text="Reset Zoom", command=self.reset_zoom)
+        self.reset_btn.pack(side=tk.RIGHT, padx=10)
+
+        # Clear ROI
+        self.clear_roi_btn = ttk.Button(toolbar, text="Clear ROI", command=self.clear_roi)
+        self.clear_roi_btn.pack(side=tk.RIGHT, padx=10)
+
+        # Export PNG
+        self.export_btn = ttk.Button(toolbar, text="Export PNG", command=self.export_png)
+        self.export_btn.pack(side=tk.RIGHT, padx=10)
+
+        # ------------------------------------------------------------------
+        # Info panel (position/value + ROI stats)
+        # ------------------------------------------------------------------
+        info = ttk.Frame(self.root, height=30)
+        info.pack(fill=tk.X, pady=3)
+        info.pack_propagate(False)
+
+        ttk.Label(info, text="Position:").pack(side=tk.LEFT)
+        self.pos_var = tk.StringVar(value="x = —, y = —")
+        ttk.Label(info, textvariable=self.pos_var).pack(side=tk.LEFT, padx=5)
+
+        ttk.Label(info, text="Value:").pack(side=tk.LEFT)
+        self.val_var = tk.StringVar(value="—")
+        ttk.Label(info, textvariable=self.val_var).pack(side=tk.LEFT, padx=5)
+
+        self.roi_stats_var = tk.StringVar(value="ROI: none")
+        ttk.Label(info, textvariable=self.roi_stats_var, foreground="#5FA8FF").pack(side=tk.RIGHT, padx=10)
+
+        # ------------------------------------------------------------------
+        # CSV logging
+        # ------------------------------------------------------------------
+        self.csv_file = "clicks.csv"
+        self.ensure_csv_header()
+
+        # ------------------------------------------------------------------
+        # Histogram window (lazy)
+        # ------------------------------------------------------------------
+        self.hist_window = None

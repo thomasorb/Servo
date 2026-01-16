@@ -1,0 +1,14 @@
+import numpy as np
+
+ROI_SHAPE = np.array((32, 32), dtype=int)
+ROI_SIZE = np.prod(ROI_SHAPE)
+FRAME_DTYPE = np.float32
+FULL_FRAME_SHAPE = np.array((320, 256), dtype=int)
+FULL_FRAME_SIZE = np.prod(FULL_FRAME_SHAPE)
+FULL_FRAME_CENTER = np.array((FULL_FRAME_SHAPE[0]//2, FULL_FRAME_SHAPE[1]//2), dtype=int)
+DEFAULT_ROI_POSITION = np.array((0, 0), dtype=int) # first column, first line
+MIN_ROI_SHAPE = 32
+
+
+
+

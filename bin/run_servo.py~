@@ -1,0 +1,113 @@
+#!/usr/bin/env python 
+# *-* coding: utf-8 *-*
+# Author: Thomas Martin <thomas.martin.1@ulaval.ca>
+
+
+
+if __name__ == "__main__":
+
+    # import pydevd
+    # pydevd.settrace('localhost', port=8888, stdoutToServer=True, stderrToServer=True)
+
+    """Main entrance of the script.
+    
+    Parse arguments and launch the reduction process.
+    """
+
+    # define epilog for command help
+
+    epilog = """  ORBS version: {}, ORB version: {}
+  Author: Thomas Martin (thomas.martin.1@ulaval.ca)""".format(
+      orbs.version.__version__, orb.core.__version__)
+     
+    # define main parser
+    parser = ArgumentParser(
+        prog='orbs',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description="Run the whole reduction process.")
+
+
+    instrument_parsers = parser.add_subparsers(help='instrument mode', dest='instrument_mode')
+
+    # add an instrument parser for each instrument
+    spiomm_parser = instrument_parsers.add_parser('spiomm', help='SpiOMM mode')
+    sitelle_parser = instrument_parsers.add_parser('sitelle', help='SITELLE mode')
+
+    # add the same operations to all instrument parsers
+    add_all_operations(spiomm_parser, epilog)
+    add_all_operations(sitelle_parser, epilog)
+
+    if len(sys.argv) < 2:
+        parser.print_usage()
+        sys.exit(2)
+        
+    args = parser.parse_args()
+    
+    # check job file 
+    if not os.path.exists(args.job_file_path):
+        raise Exception('Job file %s does not exist'%args.job_file_path)
+
+    if args.subparser_name == 'start':
+        is_laser = args.laser
+    else:
+        is_laser = False
+
+    if (args.subparser_name == 'status'
+        or args.subparser_name == 'clean'):
+        fast_init = True
+    else:
+        fast_init = False
+
+    # Read job file (check for file integrity)
+    jobfile = JobFile(args.job_file_path, args.instrument_mode, is_laser=is_laser)
+
+    if jobfile.is_valid():
+        out_params = jobfile.get_params()
+    else:
+        out_params = list()
+
+    # start and config logging
+    try:
+        logger = Logger(debug = args.debug)
+    except AttributeError:
+        logger = Logger(debug=False)
+        
+    logger.start_file_logging(logfile_path=args.job_file_path + '.log')
+
+    if 'calibration_laser_map_path' in out_params:
+        args.calibration_laser_map_path = out_params['calibration_laser_map_path']
+        
+    ###################
+    # start operation #
+    ###################
+    
+    if args.subparser_name == 'start':
+        jobfile.check_validity()
+        logging.info("Start %s"%args.job_file_path.strip())
+        # record last command
+        recfile = RecordFile(args.job_file_path)
+        recfile.last_command = sys.argv[1:]
+        recfile.update()
+
+        # start reduction
+        start(args)
+        
+    if args.subparser_name == 'status':
+        jobfile.check_validity()
+        logging.info("Status %s"%args.job_file_path.strip())
+        status(args)
+
+    if args.subparser_name == 'report':
+        jobfile.check_validity()
+        logging.info("Report %s"%args.job_file_path.strip())
+        report(args)
+        
+    if args.subparser_name == 'resume':
+        jobfile.check_validity()
+        logging.info("Resume %s"%args.job_file_path.strip())
+        resume(args, parser)
+
+    if args.subparser_name == 'clean':
+        logging.info("Clean %s"%args.job_file_path.strip())
+        clean(args)
+

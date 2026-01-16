@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+
+# Resolve the real path of this script (including symlink resolution)
+SOURCE="${BASH_SOURCE[0]}"
+
+while [ -L "$SOURCE" ]; do
+    TARGET="$(readlink "$SOURCE")"
+    if [[ "$TARGET" == /* ]]; then
+        SOURCE="$TARGET"
+    else
+        DIR="$(dirname "$SOURCE")"
+        SOURCE="$DIR/$TARGET"
+    fi
+done
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "$SOURCE")" && pwd)"
+TARGET_SCRIPT="$SCRIPT_DIR/run_servo.py"
+
+source /home/thomas/miniconda3/bin/activate servo
+
+# Run with high priority
+sudo nice -n -20 "$(which python)" "$TARGET_SCRIPT" "$@"

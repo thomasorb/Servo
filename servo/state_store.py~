@@ -1,0 +1,200 @@
+import json
+import os
+import sys
+import atexit
+import signal
+import tempfile
+import threading
+from pathlib import Path
+from typing import Any, Dict, Optional
+
+class StateStore:
+    """
+    Persistent key-value store for small application state.
+    - Loads at startup (if file exists)
+    - Saves atomically at shutdown (atexit + SIGINT/SIGTERM)
+    - Thread-safe; intended to be written by the main process only.
+
+    Example:
+        state = StateStore(app_name="servo", filename="state.json", schema_version=1)
+        opd = state.get("piezos.OPD", 0.0)
+        state.set("piezos.OPD", 3.2)
+    """
+    def __init__(
+        self,
+        app_name: str = "servo",
+        filename: str = "state.json",
+        schema_version: int = 1,
+        directory: Optional[Path] = None,
+        use_config_dir: bool = False,
+        only_main_process_writes: bool = True,
+    ):
+        self.app_name = app_name
+        self.schema_version = schema_version
+        self.only_main_process_writes = only_main_process_writes
+        self._lock = threading.RLock()
+        self._data: Dict[str, Any] = {}
+        self._pid = os.getpid()
+
+        # Choose base directory:
+        # - state path (~/.local/state/app) by default
+        # - or config path (~/.config/app) if use_config_dir=True
+        if directory is not None:
+            base = Path(directory)
+        else:
+            if use_config_dir:
+                base = Path.home() / ".config" / app_name
+            else:
+                base = Path.home() / ".local" / "state" / app_name
+
+        base.mkdir(parents=True, exist_ok=True)
+        self.path = base / filename
+
+        # Attach process shutdown hooks (only in the main process)
+        atexit.register(self._on_exit)
+        self._install_signal_handlers_once()
+
+        # Load existing file (or initialize defaults)
+        self._load()
+
+    # --------------------------- Public API ---------------------------
+
+    def get(self, key: str, default: Any = None) -> Any:
+        """Get a value by dotted key (e.g., 'piezos.OPD')."""
+        with self._lock:
+            return _deep_get(self._data, key, default)
+
+    def set(self, key: str, value: Any) -> None:
+        """Set a value by dotted key. Creates nested dicts as needed."""
+        with self._lock:
+            _deep_set(self._data, key, value)
+
+    def as_dict(self) -> Dict[str, Any]:
+        """Return a deep copy-like view (shallow copy at top, safe for read)."""
+        with self._lock:
+            return dict(self._data)
+
+    def save(self) -> None:
+        """Persist current state to disk (atomic replace)."""
+        if self.only_main_process_writes and os.getpid() != self._pid:
+            # Skip writes from child processes
+            return
+        with self._lock:
+            _atomic_json_dump({
+                "schema_version": self.schema_version,
+                "data": self._data,
+            }, self.path)
+
+    # ----------------------- Internal methods ------------------------
+
+    def _load(self) -> None:
+        if not self.path.exists():
+            # Initialize with empty data at first run
+            with self._lock:
+                self._data = {}
+            return
+        try:
+            raw = json.loads(self.path.read_text(encoding="utf-8"))
+            # Minimal schema handling
+            file_ver = int(raw.get("schema_version", 1))
+            payload = raw.get("data", {})
+            if file_ver != self.schema_version:
+                payload = self._migrate(payload, file_ver, self.schema_version)
+            if not isinstance(payload, dict):
+                payload = {}
+            with self._lock:
+                self._data = payload
+        except Exception:
+            # Corrupted or unreadable file → keep defaults, do not crash UI
+            with self._lock:
+                self._data = {}
+
+    def _migrate(self, payload: Dict[str, Any], from_ver: int, to_ver: int) -> Dict[str, Any]:
+        """Migrate payload to the current schema version (extend as needed)."""
+        migrated = dict(payload)
+        # Example migrations scaffold (no-op for now):
+        # if from_ver < 2 <= to_ver:
+        #     migrated["new_field"] = migrated.get("new_field", "default")
+        return migrated
+
+    def _on_exit(self) -> None:
+        """atexit hook — save state on process shutdown."""
+        try:
+            self.save()
+        except Exception:
+            # Last-chance: never raise during interpreter shutdown
+            pass
+
+    _sig_installed = False
+    _sig_lock = threading.Lock()
+
+    @classmethod
+    def _install_signal_handlers_once(cls):
+        """Install SIGINT/SIGTERM safe-exit handler only once per process."""
+        with cls._sig_lock:
+            if cls._sig_installed:
+                return
+            cls._sig_installed = True
+
+            def _handler(signum, frame):
+                # Flush atexit hooks then re-raise default behavior
+                try:
+                    atexit._run_exitfuncs()  # run registered atexit funcs
+                except Exception:
+                    pass
+                # Restore default handler and re-send the signal to terminate
+                signal.signal(signum, signal.SIG_DFL)
+                os.kill(os.getpid(), signum)
+
+            # Only install in main thread and if signals are available
+            if threading.current_thread() is threading.main_thread():
+                for sig in (signal.SIGINT, signal.SIGTERM):
+                    try:
+                        signal.signal(sig, _handler)
+                    except Exception:
+                        pass
+
+
+# ----------------------- Helper functions ---------------------------
+
+def _deep_get(d: Dict[str, Any], dotted: str, default=None):
+    cur = d
+    for part in dotted.split("."):
+        if not isinstance(cur, dict) or part not in cur:
+            return default
+        cur = cur[part]
+    return cur
+
+def _deep_set(d: Dict[str, Any], dotted: str, value: Any):
+    cur = d
+    parts = dotted.split(".")
+    for p in parts[:-1]:
+        nxt = cur.get(p)
+        if not isinstance(nxt, dict):
+            nxt = {}
+            cur[p] = nxt
+        cur = nxt
+    cur[parts[-1]] = value
+
+def _atomic_json_dump(obj: Dict[str, Any], path: Path) -> None:
+    """
+    Write JSON atomically:
+    - Write to a temp file in the same directory
+    - fsync file, then os.replace into final path
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_fd, tmp_name = tempfile.mkstemp(prefix=path.name, dir=str(path.parent))
+    try:
+        with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
+            json.dump(obj, f, ensure_ascii=False, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_name, path)  # atomic on POSIX & recent Windows
+    finally:
+        # In case of exception before replace
+        try:
+            if os.path.exists(tmp_name):
+                os.remove(tmp_name)
+        except Exception:
+            pass
+
