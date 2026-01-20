@@ -1,7 +1,7 @@
 import numpy as np
 
-ROI_SHAPE = np.array((32, 32), dtype=int)
-ROI_SIZE = np.prod(ROI_SHAPE)
+#ROI_SHAPE = np.array((32, 32), dtype=int)
+#ROI_SIZE = np.prod(ROI_SHAPE)
 FRAME_DTYPE = np.float32
 FULL_FRAME_SHAPE = np.array((320, 256), dtype=int)
 FULL_FRAME_SIZE = np.prod(FULL_FRAME_SHAPE)
@@ -15,6 +15,7 @@ DAQ_CHANGE_SPEED = 1.0 # level change per second
 DAQ_LOOP_TIME = 0.1
 DAQ_MAX_LEVEL_CHANGE = DAQ_CHANGE_SPEED * DAQ_LOOP_TIME
 
-
+DEFAULT_PROFILE_LEN = MIN_ROI_SHAPE
+DEFAULT_PROFILE_POSITION = np.array((DEFAULT_PROFILE_LEN//2, DEFAULT_PROFILE_LEN//2), dtype=int)
 
 

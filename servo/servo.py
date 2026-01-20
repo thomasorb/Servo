@@ -104,30 +104,25 @@ def run(mode='loop', nocam=False, noviewer=False):
 
     input('press any key to exit\n')
 
-    try:
-        # Graceful stop
-        for p, ev in workers:
-            time.sleep(1)
-            ev.set()
+    # Graceful stop
+    for p, ev in workers:
+        time.sleep(1)
+        ev.set()
 
-        # Wait for clean exit
-        for p, _ in workers:
-            p.join(timeout=5)
+    # Wait for clean exit
+    for p, _ in workers:
+        p.join(timeout=5)
 
-        # Fallback kill if needed
-        for p, _ in workers:
-            if p.is_alive():
-                log.error(f"{p.name} stuck, forcing terminate()")
-                p.terminate()
-                p.join()
-    except Exception() as e:
-        log.error(f'Error at exit: {e}')
+    data.stop() # must be done before any exit kill
 
-    finally:
-        data.stop()
+    # Fallback kill if needed
+    for p, _ in workers:
+        if p.is_alive():
+            log.error(f"{p.name} stuck, forcing terminate()")
+            p.terminate()
+            p.join()
 
-        queue.put_nowait(None)
-
+    queue.put_nowait(None)
 
 if __name__ == '__main__':
     main()

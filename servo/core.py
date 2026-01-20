@@ -38,6 +38,7 @@ class SharedData(object):
     def __init__(self):
         self.shms = dict()
         self.arrs = dict()
+        self.stored_names = list()
 
         self.state = state_store.StateStore(
             app_name="servo",
@@ -53,18 +54,32 @@ class SharedData(object):
         self.add_value('IRCamera.frame_dimy', int(config.FULL_FRAME_SHAPE[1]))
         self.add_value('IRCamera.initialized', False)
 
-        init_levels = np.array(self.state.get("DAQ.piezos_level"),
-                               dtype=config.DAQ_PIEZO_LEVELS_DTYPE)
-        if np.any(np.isnan(init_levels)):
-            init_levels = np.zeros(3, dtype=config.DAQ_PIEZO_LEVELS_DTYPE)
-            log.warning('piezos levels could not be loaded from saved state')
-        else:
-            log.info(f'init piezos levels: {init_levels}')
-            
-        self.add_array('DAQ.piezos_level', init_levels)
+        # profiles len set to max to avoid problems when changing profile length
+        self.add_array('IRCamera.hprofile', np.zeros(config.FULL_FRAME_SHAPE[0],
+                                                     dtype=config.FRAME_DTYPE)) 
+        self.add_array('IRCamera.vprofile', np.zeros(config.FULL_FRAME_SHAPE[1],
+                                                     dtype=config.FRAME_DTYPE))
 
-    
-    def add_array(self, name, array):
+        self.add_value('IRCamera.profile_x', int(config.DEFAULT_PROFILE_POSITION[0]), stored=True)
+        self.add_value('IRCamera.profile_y', int(config.DEFAULT_PROFILE_POSITION[1]), stored=True)
+        self.add_value('IRCamera.profile_len', int(config.DEFAULT_PROFILE_LEN), stored=True)
+        
+        self.add_array('DAQ.piezos_level',
+                       np.zeros(3, dtype=config.DAQ_PIEZO_LEVELS_DTYPE),
+                       stored=True)
+
+    def add_array(self, name, array, stored=False):
+        if stored:
+            self.stored_names.append(name)
+            if self.state.get(name) is None:
+                log.warning(f'{name} could not be loaded from saved states')
+            else:
+                init = np.array(self.state.get(name), dtype=array.dtype)
+                if np.any(np.isnan(init)):
+                    log.warning(f'{name} could not be loaded from saved states')
+                else:
+                    array = init
+            
         try:
             self.shms[name] = shared_memory.SharedMemory(create=True, name=name, size=array.nbytes)
         except FileExistsError:
@@ -77,8 +92,8 @@ class SharedData(object):
         #self.shms[name].close()  # ne détruit pas
         log.info(f'added shared array {name} {array.shape}')
 
-    def add_value(self, name, val):
-        self.add_array(name, np.array([val,]))
+    def add_value(self, name, val, stored=False):
+        self.add_array(name, np.array([val,]), stored=stored)
 
 
     def __getitem__(self, name):
@@ -91,8 +106,11 @@ class SharedData(object):
         
         # save states
         log.info('saving states')
-        self.state.set("DAQ.piezos_level", list(self["DAQ.piezos_level"][:3]))
-
+        for iname in self.stored_names:
+            idata = list(self[iname][:])
+            self.state.set(iname, idata)
+            log.info(f'   {iname} : {idata}')
+                    
         self.state.save()
 
         # free shared memory

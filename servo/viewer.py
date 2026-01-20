@@ -1,24 +1,24 @@
-
 import numpy as np
 import tkinter as tk
 from tkinter import ttk
 from PIL import Image, ImageTk
-import csv
+#import csv
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import json
 from pathlib import Path
+import logging
 
 from . import core
 from . import config
 
+log = logging.getLogger(__name__)
 
 class Viewer(core.Worker):
     """
     Tkinter-based scientific viewer with:
     - Zoom/pan
     - ROI tool
-    - Line profile tool
     - Adjustable LUTs
     - Histogram window
     - Export to PNG
@@ -69,22 +69,71 @@ class Viewer(core.Worker):
         self.current_lut_name = "gray"
         self.lut = self.build_lut_gray()
 
-        # ------------------------------------------------------------------
-        # MAIN LAYOUT : canvas (left) + right panel
-        # ------------------------------------------------------------------
+
+        # ==================================================================
+        # Main layout: LEFT = image + profiles, RIGHT = controls
+        # ==================================================================
+
         main_frame = ttk.Frame(self.root)
         main_frame.pack(fill=tk.BOTH, expand=True)
 
-        # Canvas
-        self.canvas = tk.Canvas(main_frame, bg="black")
-        self.canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        # LEFT SIDE ---------------------------------------------------------
+        left_col = ttk.Frame(main_frame)
+        left_col.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
-        # Right-side panel
-        right_panel = ttk.Frame(main_frame)
-        right_panel.pack(side=tk.RIGHT, fill=tk.Y, padx=6, pady=6)
+        # Image canvas at the top
+        canvas_frame = ttk.Frame(left_col)
+        canvas_frame.pack(fill=tk.BOTH, expand=True)
+
+        self.canvas = tk.Canvas(canvas_frame, bg="black")
+        self.canvas.pack(fill=tk.BOTH, expand=True)
+
+        # Profiles under the image
+        profiles_frame = ttk.Frame(left_col)
+        profiles_frame.pack(fill=tk.X, expand=False, pady=10)
+        self._profiles_frame = profiles_frame
+
+
+        # RIGHT SIDE --------------------------------------------------------
+        right_col = ttk.Frame(main_frame)
+        right_col.pack(side=tk.RIGHT, fill=tk.Y, padx=6, pady=6)
+        self._right_col = right_col
 
         # Piezos frame
-        self._build_piezos_controls(right_panel)
+        self._build_piezos_controls(self._right_col)
+        
+        # ==================================================================
+        # Profile radius input (right side, under Piezos)
+        # ==================================================================
+        profile_radius_frame = ttk.LabelFrame(self._right_col, text="Profile size", padding=10)
+        profile_radius_frame.pack(fill=tk.X, expand=False, pady=15)
+
+        self.profile_radius = tk.IntVar(value=self.data['IRCamera.profile_len'][0])
+        self.profile_radius.trace_add("write", self.on_radius_changed)
+        ttk.Label(profile_radius_frame, text="Half-size (px):").pack(anchor="w")
+        ttk.Entry(profile_radius_frame, textvariable=self.profile_radius, width=8).pack(anchor="w", pady=4)
+
+        # ------------------------------------------------------------------
+        # Profiles Panel (horizontal & vertical real-time profiles)
+        # ------------------------------------------------------------------
+
+        # Horizontal profile
+        self.fig_h = plt.Figure(figsize=(6, 1.8), dpi=90)
+        self.ax_h = self.fig_h.add_subplot(111)
+        self.ax_h.set_title("Horizontal profile")
+        self.ax_h.set_ylim(0, 1)
+
+        self.canvas_h = FigureCanvasTkAgg(self.fig_h, master=self._profiles_frame)
+        self.canvas_h.get_tk_widget().pack(fill=tk.X, padx=8, pady=4)
+
+        # Vertical profile
+        self.fig_v = plt.Figure(figsize=(6, 1.8), dpi=90)
+        self.ax_v = self.fig_v.add_subplot(111)
+        self.ax_v.set_title("Vertical profile")
+        self.ax_v.set_ylim(0, 1)
+
+        self.canvas_v = FigureCanvasTkAgg(self.fig_v, master=self._profiles_frame)
+        self.canvas_v.get_tk_widget().pack(fill=tk.X, padx=8, pady=4)
 
         # Tk image holder
         self.root.after_idle(lambda: self.on_resize(None))
@@ -160,8 +209,8 @@ class Viewer(core.Worker):
         # ------------------------------------------------------------------
         # CSV logging
         # ------------------------------------------------------------------
-        self.csv_file = "clicks.csv"
-        self.ensure_csv_header()
+        #self.csv_file = "clicks.csv"
+        #self.ensure_csv_header()
 
         # ------------------------------------------------------------------
         # Histogram window
@@ -188,11 +237,8 @@ class Viewer(core.Worker):
         self.canvas.bind("<Button-4>", lambda e: self.zoom_at(e.x, e.y, 1.1))
         self.canvas.bind("<Button-5>", lambda e: self.zoom_at(e.x, e.y, 0.9))
 
-        # SHIFT tool (line profile)
-        self.profile_active = False
-        self.profile_start = None
-        self.profile_line_id = None
-
+        # SHIFT tool (nothing)
+        
         # CTRL tool (ROI)
         self.roi_active = False
         self.roi_start_canvas = None
@@ -202,6 +248,9 @@ class Viewer(core.Worker):
         self._normal_click_start = None
 
         self.root.bind("<<Shutdown>>", lambda e: self._really_stop())
+
+        # init values
+        self.add_marker(self.data['IRCamera.profile_x'][0], self.data['IRCamera.profile_y'][0])
         
         # Start periodic refresh
         self.root.after(100, self.refresh)
@@ -372,6 +421,7 @@ class Viewer(core.Worker):
         for item_id, ix, iy in self.points:
             cx, cy = self.image_to_canvas(ix, iy)
             self.canvas.coords(item_id, cx-r, cy-r, cx+r, cy+r)
+            self.canvas.tag_raise(item_id)
 
         self.canvas.tag_raise(self.cross_h)
         self.canvas.tag_raise(self.cross_v)
@@ -423,6 +473,8 @@ class Viewer(core.Worker):
     # ----------------------------------------------------------------------
     def on_mouse_move(self, event):
         ix, iy = self.canvas_to_image(event.x, event.y)
+        
+        
         if 0 <= ix < self.img_w and 0 <= iy < self.img_h:
             self.pos_var.set(f"x = {ix}, y = {iy}")
             self.val_var.set(f"{float(self.frame[iy, ix]):.3f}")
@@ -436,11 +488,11 @@ class Viewer(core.Worker):
                            event.x, self.canvas.winfo_height())
 
     # ----------------------------------------------------------------------
-    # LEFT CLICK: marker / profile / ROI
+    # LEFT CLICK: marker / ROI
     # ----------------------------------------------------------------------
     def on_left_press_dispatch(self, event):
         if event.state & 0x0001:   # SHIFT
-            self.profile_start_event(event)
+            pass
         elif event.state & 0x0004: # CTRL
             self.roi_start_event(event)
         else:
@@ -448,14 +500,26 @@ class Viewer(core.Worker):
 
     def on_left_motion_dispatch(self, event):
         if event.state & 0x0001:
-            self.profile_drag_event(event)
+            pass
         elif event.state & 0x0004:
             self.roi_drag_event(event)
 
+    def add_marker(self, ix, iy):
+        val = float(self.frame[iy, ix])
+        
+        # Remove old markers
+        for item, _, _ in self.points:
+            self.canvas.delete(item)
+        self.points.clear()
+
+        # Add new marker
+        cx, cy = self.image_to_canvas(ix, iy)
+        r = 4
+        p = self.canvas.create_oval(cx-r, cy-r, cx+r, cy+r,
+                                    fill="red", outline="")
+        self.points.append((p, ix, iy))
+            
     def on_left_release_dispatch(self, event):
-        if self.profile_active:
-            self.profile_end_event(event)
-            return
         if self.roi_active:
             self.roi_end_event(event)
             return
@@ -464,112 +528,22 @@ class Viewer(core.Worker):
         if self._normal_click_start:
             ix, iy = self.canvas_to_image(event.x, event.y)
             if 0 <= ix < self.img_w and 0 <= iy < self.img_h:
-                val = float(self.frame[iy, ix])
-                self.save_click(ix, iy, val)
-
-                # Remove old markers
-                for item, _, _ in self.points:
-                    self.canvas.delete(item)
-                self.points.clear()
-
-                # Add new marker
-                r = 4
-                cx, cy = event.x, event.y
-                p = self.canvas.create_oval(cx-r, cy-r, cx+r, cy+r,
-                                            fill="red", outline="")
-                self.points.append((p, ix, iy))
-
+                self.add_marker(ix, iy)
+                self.data['IRCamera.profile_x'][0] = int(ix)
+                self.data['IRCamera.profile_y'][0] = int(iy)
+                
+                
             self._normal_click_start = None
 
-    # ----------------------------------------------------------------------
-    # PROFILE TOOL
-    # ----------------------------------------------------------------------
-    def profile_start_event(self, event):
-        ix, iy = self.canvas_to_image(event.x, event.y)
-        if not (0 <= ix < self.img_w and 0 <= iy < self.img_h):
-            return
-        self.profile_active = True
-        self.profile_start = (event.x, event.y)
-        if self.profile_line_id:
-            self.canvas.delete(self.profile_line_id)
-        self.profile_line_id = None
+    
+    def on_radius_changed(self, *args):
+        log.info("Profile radius updated:", self.profile_radius.get())
+        self.data['IRCamera.profile_len'][0] = int(self.profile_radius.get())
+        if self.points:
+            _, mx, my = self.points[0]
+            self.update_profiles(mx, my)
 
-    def profile_drag_event(self, event):
-        if not self.profile_active:
-            return
-        if self.profile_line_id:
-            self.canvas.delete(self.profile_line_id)
-        self.profile_line_id = self.canvas.create_line(
-            self.profile_start[0], self.profile_start[1],
-            event.x, event.y, fill="cyan", width=2)
 
-    def profile_end_event(self, event):
-        if not self.profile_active:
-            return
-        self.profile_active = False
-        if not self.profile_line_id:
-            return
-
-        x0, y0 = self.profile_start
-        x1, y1 = event.x, event.y
-        ix0, iy0 = self.canvas_to_image(x0, y0)
-        ix1, iy1 = self.canvas_to_image(x1, y1)
-
-        if not (0 <= ix0 < self.img_w and 0 <= iy0 < self.img_h):
-            return
-        if not (0 <= ix1 < self.img_w and 0 <= iy1 < self.img_h):
-            return
-
-        profile = self.compute_line_profile(ix0, iy0, ix1, iy1)
-        self.show_profile_window(profile)
-
-        self.canvas.delete(self.profile_line_id)
-        self.profile_line_id = None
-
-    def compute_line_profile(self, x0, y0, x1, y1):
-        length = int(np.hypot(x1 - x0, y1 - y0))
-        if length < 2:
-            return np.array([])
-
-        xs = np.linspace(x0, x1, length)
-        ys = np.linspace(y0, y1, length)
-
-        xs = np.clip(xs, 0, self.img_w-1)
-        ys = np.clip(ys, 0, self.img_h-1)
-
-        vals = []
-        for x, y in zip(xs, ys):
-            x0i = int(np.floor(x))
-            x1i = min(x0i + 1, self.img_w - 1)
-            y0i = int(np.floor(y))
-            y1i = min(y0i + 1, self.img_h - 1)
-
-            dx = x - x0i
-            dy = y - y0i
-
-            v00 = self.frame[y0i, x0i]
-            v10 = self.frame[y0i, x1i]
-            v01 = self.frame[y1i, x0i]
-            v11 = self.frame[y1i, x1i]
-
-            top = v00 * (1-dx) + v10 * dx
-            bottom = v01 * (1-dx) + v11 * dx
-            vals.append(top * (1-dy) + bottom * dy)
-
-        return np.array(vals, dtype=np.float32)
-
-    def show_profile_window(self, profile):
-        if profile.size == 0:
-            return
-        fig = plt.figure(figsize=(6, 3))
-        ax = fig.add_subplot(111)
-        ax.plot(profile, color="cyan")
-        ax.set_title("Line Profile")
-        ax.set_xlabel("Distance (pixels)")
-        ax.set_ylabel("Intensity")
-        ax.grid(alpha=0.3)
-        fig.tight_layout()
-        fig.show()
 
     # ----------------------------------------------------------------------
     # ROI TOOL
@@ -642,19 +616,19 @@ class Viewer(core.Worker):
         self.roi_stats_var.set("ROI: none")
         self.update_histogram()
 
-    # ----------------------------------------------------------------------
-    # CSV LOGGING
-    # ----------------------------------------------------------------------
-    def ensure_csv_header(self):
-        try:
-            with open(self.csv_file, "x", newline="", encoding="utf-8") as f:
-                csv.writer(f).writerow(["x", "y", "value"])
-        except FileExistsError:
-            pass
+    # # ----------------------------------------------------------------------
+    # # CSV LOGGING
+    # # ----------------------------------------------------------------------
+    # def ensure_csv_header(self):
+    #     try:
+    #         with open(self.csv_file, "x", newline="", encoding="utf-8") as f:
+    #             csv.writer(f).writerow(["x", "y", "value"])
+    #     except FileExistsError:
+    #         pass
 
-    def save_click(self, x, y, val):
-        with open(self.csv_file, "a", newline="", encoding="utf-8") as f:
-            csv.writer(f).writerow([x, y, val])
+    # def save_click(self, x, y, val):
+    #     with open(self.csv_file, "a", newline="", encoding="utf-8") as f:
+    #         csv.writer(f).writerow([x, y, val])
 
     # ----------------------------------------------------------------------
     # HISTOGRAM WINDOW
@@ -825,12 +799,73 @@ class Viewer(core.Worker):
             self.frame = new_frame
             self.render()
             self.update_histogram()
+            
         except Exception as e:
             log.error(f'error at frame refresh {e}')
+        
+        # Update profiles centered on marker (if one exists)
+        if self.points:
+            _, mx, my = self.points[0]
+            if 0 <= mx < self.img_w and 0 <= my < self.img_h:
+                try:
+                    self.update_profiles(mx, my)
+                except Exception:
+                    pass
 
         if not (self.stop_event and self.stop_event.is_set()):
             self.root.after(100, self.refresh)
 
+    # -----------------------------------------------
+    # HORIZONTAL AND VERTICAL PROFILES
+    # -----------------------------------------------
+    def update_profiles(self, ix, iy):
+        """
+        Update horizontal & vertical profiles centered on (ix, iy)
+        using the radius given by user.
+        """
+        # r = int(self.profile_radius.get())
+        # h, w = self.frame.shape
+
+        # # Horizontal window: y = iy, x in [ix-r, ix+r]
+        # x0 = max(0, ix - r)
+        # x1 = min(w - 1, ix + r)
+        # horiz = self.frame[iy, x0:x1+1]
+
+        # # Vertical window: x = ix, y in [iy-r, iy+r]
+        # y0 = max(0, iy - r)
+        # y1 = min(h - 1, iy + r)
+        # vert = self.frame[y0:y1+1, ix]
+
+        horiz = self.data['IRCamera.hprofile'][:self.data['IRCamera.profile_len'][0]]
+        vert = self.data['IRCamera.vprofile'][:self.data['IRCamera.profile_len'][0]]
+        
+        # Update horizontal plot
+        def draw(canvas, fig, ax, dat):
+            ax.clear()
+
+            # Plot
+            ax.plot(dat, color="black")
+
+            # Remove all padding and borders
+            ax.set_title("")                # remove title if you want
+            ax.set_ylim(0, 1)
+            ax.set_xlim(0, len(dat))
+
+            # Kill axis spines and ticks
+            ax.set_xticks([])
+            ax.set_yticks([])
+            for spine in ax.spines.values():
+                spine.set_visible(False)
+
+            # Remove all padding around the figure
+            ax.set_position([0, 0, 1, 1])
+            fig.subplots_adjust(left=0, right=1, top=1, bottom=0)
+
+            canvas.draw()
+
+        draw(self.canvas_h, self.fig_h, self.ax_h, horiz)
+        draw(self.canvas_v, self.fig_v, self.ax_v, vert)
+       
     # ----------------------------------------------------------------------
     # PIEZOS PANEL
     # ----------------------------------------------------------------------
@@ -846,13 +881,13 @@ class Viewer(core.Worker):
         self.var_da2 = tk.DoubleVar(value=0.0)
 
         try:
-            init = self.data.get("DAQ.piezos_level", None)
-            if init and len(init) >= 3:
+            init = self.data["DAQ.piezos_level"][:3]
+            if len(init) >= 3:
                 self.var_opd.set(float(init[0]))
                 self.var_da1.set(float(init[1]))
                 self.var_da2.set(float(init[2]))
-        except Exception:
-            pass
+        except Exception as e:
+            log.error(f'Error when reading piezos initial values {e}')
 
         def _col(label, var, col):
             col_frame = ttk.Frame(row)

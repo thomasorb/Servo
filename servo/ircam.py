@@ -1,6 +1,7 @@
 import numpy as np
 import time
 import logging
+import traceback
 
 from . import NITLibrary_x64_382_py312 as NITLibrary
 
@@ -76,7 +77,7 @@ class IRCamera(core.Worker):
         self.agc = NITLibrary.NITToolBox.NITAutomaticGainControl()
         #self.player = NITLibrary.NITToolBox.NITPlayer("Player")
         self.dev << self.agc #<< self.player
-        self.data_observer = DataObserver(self.data)
+        self.data_observer = DataObserver(self.data, self.roi_position, self.roi_shape)
         self.agc << self.data_observer
         self.data['IRCamera.initialized'][0] = True
         
@@ -132,10 +133,12 @@ class ConfigObserver(NITLibrary.NITConfigObserver):
 class DataObserver(NITLibrary.NITUserObserver):
 
     
-    def __init__(self, data):
+    def __init__(self, data, roi_position, roi_shape):
 
         super().__init__()
         self.data = data
+        self.roi_position = roi_position
+        self.roi_shape = roi_shape
         self.times = np.full(1000, np.nan, dtype=float)
         self.ids = np.full_like(self.times, np.nan)
         self.last_frame_out_time = 0
@@ -163,11 +166,32 @@ class DataObserver(NITLibrary.NITUserObserver):
 
                 frame_data = frame.data().T.flatten()
                 self.data['IRCamera.last_frame'][:self.data['IRCamera.frame_size'][0]] = frame_data
-                
-              
+
+            try:
+            # profile x and y always set in full frame coordinates
+                ix = self.data['IRCamera.profile_x'][0] - self.roi_position[0]
+                iy = self.data['IRCamera.profile_y'][0] - self.roi_position[1]
+                profile_len = self.data['IRCamera.profile_len'][0]
+                ilen = int(profile_len)
+                if ilen > np.min(self.roi_shape): ilen = np.min(self.roi_shape) 
+
+                hprofile = frame.data()[max(0, ix-ilen//2):min(self.roi_shape[0], ix+ilen//2), iy]
+                vprofile = frame.data()[ix, max(0, iy-ilen//2):min(self.roi_shape[1], iy+ilen//2)]
+
+                # nan padded versions
+                hprofile_np = np.full(profile_len, np.nan, dtype=hprofile.dtype)
+                hprofile_np[:np.size(hprofile)] = hprofile
+
+                vprofile_np = np.full(profile_len, np.nan, dtype=vprofile.dtype)
+                vprofile_np[:np.size(vprofile)] = vprofile
+
+                self.data['IRCamera.hprofile'][:profile_len] = hprofile_np
+                self.data['IRCamera.vprofile'][:profile_len] = vprofile_np
+            except Exception as e:
+                log.error(f'Error at reading profiles on camera {traceback.format_exc()}')
         
         except Exception as e:
-            log.error('error on new frame:', e)
+            log.error('error on new frame:', {traceback.format_exc()})
 
 
         
