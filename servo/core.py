@@ -117,8 +117,11 @@ class SharedData(object):
         # free shared memory
         for ikey in self.shms:
             self.shms[ikey].close()
-            self.shms[ikey].unlink()
-            log.info(f'removed shared memory {ikey}')
+            try:
+                self.shms[ikey].unlink()
+                log.info(f'removed shared memory {ikey}')
+            except FileNotFoundError:
+                log.warning(f'shared memory {ikey} could not be unlinked')
 
 
 

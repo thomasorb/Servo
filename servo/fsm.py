@@ -62,8 +62,11 @@ class StateMachine:
         return True
 
 
+    
 class ServoFSM(StateMachine):
-    def __init__(self):
+    def __init__(self, data, events):
+        self.data = data
+        self.events = events
         table = {
             (FsmState.IDLE,    FsmEvent.START): Transition(FsmState.RUNNING, action=self._start),
             (FsmState.RUNNING, FsmEvent.NORMALIZE): Transition(FsmState.RUNNING, action=self._normalize),
@@ -74,32 +77,6 @@ class ServoFSM(StateMachine):
         }
         super().__init__(FsmState.IDLE, table)
 
-    # Hooks (facultatif)
-    def on_enter_running(self, _): log.debug(">> RUNNING")
-    def on_exit_running(self, _):  log.debug("<< RUNNING")
-
-    # Actions
-    def _start(self, _):
-        log.info("Starting Servo")
-    def _normalize(self, _):
-        log.info("Normalizing")
-    def _stop(self, _):
-        log.info("Stopping Servo")
-
-
-class MPEventBridge:
-    """
-    Non-blocking poll of multiprocessing events
-    events : dict-like with keys -> Event()
-      - 'start_evt'
-      - 'stop_evt'
-      - 'error_evt'
-      - 'reset_evt'  (optional)
-    """
-    def __init__(self, fsm, events: Mapping):
-        self.fsm = fsm
-        self.events = events
-        self.poll()
 
     def poll(self):
         evs = self.events
@@ -107,4 +84,20 @@ class MPEventBridge:
         for iname in config.SERVO_EVENTS:
             if evs.get(iname) and evs[iname].is_set():
                 evs[iname].clear()
-                self.fsm.dispatch(getattr(FsmEvent, iname.upper()), payload=None)
+                self.dispatch(getattr(FsmEvent, iname.upper()), payload=None)
+
+    # Hooks (facultatif)
+    def on_enter_running(self, _): log.info(">> RUNNING")
+    def on_exit_running(self, _):  log.info("<< RUNNING")
+
+    # Actions
+    def _start(self, _):
+        log.info("Starting Servo")
+
+    def _normalize(self, _):
+        log.info("Normalizing")
+                
+    def _stop(self, _):
+        log.info("Stopping Servo")
+
+

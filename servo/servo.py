@@ -77,8 +77,7 @@ def run(mode='loop', nocam=False, noviewer=False):
 
 
     ## start Servo FSM
-    servo_fsm = fsm.ServoFSM()
-    event_bridge = fsm.MPEventBridge(servo_fsm, events)
+    servo_fsm = fsm.ServoFSM(data, events)
     
     ## start all threads
     workers = list()
@@ -115,7 +114,7 @@ def run(mode='loop', nocam=False, noviewer=False):
     # running loop
     while True:
         try:
-            event_bridge.poll()
+            servo_fsm.poll()
             if servo_fsm.state is fsm.FsmState.STOPPED:
                 break
             time.sleep(0.1)
