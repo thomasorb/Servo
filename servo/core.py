@@ -11,9 +11,10 @@ log = logging.getLogger(__name__)
 
 class Worker(object):
 
-    def __init__(self, data, stop_event):
+    def __init__(self, data, events):
         self.data = data
-        self.stop_event = stop_event
+        self.events = events
+        self.stop_event = self.events[f"{self.__class__.__name__}.stop"]
         self.running = True
 
     

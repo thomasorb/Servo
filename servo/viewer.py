@@ -29,9 +29,8 @@ class Viewer(core.Worker):
     # ------------------------------------------------------------------
     # INITIALIZATION
     # ------------------------------------------------------------------
-    def __init__(self, data, stop_event=None):
-        self.data = data
-        self.stop_event = stop_event
+    def __init__(self, data, events):
+        super().__init__(data, events)
 
         self.root = tk.Tk()
         self.root.title("IRCamera Viewer")
@@ -173,19 +172,28 @@ class Viewer(core.Worker):
 
         self.hist_btn = ttk.Button(toolbar, text="Show Histogram",
                                    command=self.toggle_histogram)
-        self.hist_btn.pack(side=tk.RIGHT, padx=10)
+        self.hist_btn.pack(side=tk.LEFT, padx=10)
 
         self.reset_btn = ttk.Button(toolbar, text="Reset Zoom",
                                     command=self.reset_zoom)
-        self.reset_btn.pack(side=tk.RIGHT, padx=10)
+        self.reset_btn.pack(side=tk.LEFT, padx=10)
 
         self.clear_roi_btn = ttk.Button(toolbar, text="Clear ROI",
                                         command=self.clear_roi)
-        self.clear_roi_btn.pack(side=tk.RIGHT, padx=10)
+        self.clear_roi_btn.pack(side=tk.LEFT, padx=10)
 
         self.export_btn = ttk.Button(toolbar, text="Export PNG",
                                      command=self.export_png)
-        self.export_btn.pack(side=tk.RIGHT, padx=10)
+        self.export_btn.pack(side=tk.LEFT, padx=10)
+
+        self.normalize_btn = ttk.Button(toolbar, text="NORMALIZE",
+                                        command=self.normalize)
+        self.normalize_btn.pack(side=tk.RIGHT, padx=10)
+
+        self.stop_btn = ttk.Button(toolbar, text="STOP",
+                                   command=self.stop_servo)
+        self.stop_btn.pack(side=tk.RIGHT, padx=10)
+
 
         # ------------------------------------------------------------------
         # Info panel
@@ -286,6 +294,19 @@ class Viewer(core.Worker):
             self.root.destroy()
         except Exception:
             pass
+
+    
+    def _set_event(self, key: str):
+        """
+        Déclenche (set) l'événement identifié par `key` dans self.events.
+        Loggue un warning si l'événement est introuvable ou n'a pas .set().
+        """
+        try:
+            self.events[key].set()
+
+        except Exception as e:
+            log.error(f"Error at event set '{key}': {e}")
+
 
     # ----------------------------------------------------------------------
     # FRAME ACQUISITION
@@ -915,3 +936,12 @@ class Viewer(core.Worker):
 
     def _on_piezos_change(self, *_):
         self._write_piezos_to_shared()
+
+
+    # events
+    def stop_servo(self):
+        self._set_event('stop')
+
+    def normalize(self):
+        self._set_event('normalize')
+

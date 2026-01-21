@@ -12,9 +12,9 @@ log = logging.getLogger(__name__)
 
 class IRCamera(core.Worker):
 
-    def __init__(self, data, stop_event, roi_shape=None, roi_center=None):
+    def __init__(self, data, events, roi_shape=None, roi_center=None):
         
-        super().__init__(data, stop_event)
+        super().__init__(data, events)
         
         if roi_shape is None:
             self.roi_shape = np.array(config.FULL_FRAME_SHAPE)

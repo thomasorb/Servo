@@ -19,3 +19,8 @@ DEFAULT_PROFILE_LEN = MIN_ROI_SHAPE
 DEFAULT_PROFILE_POSITION = np.array((DEFAULT_PROFILE_LEN//2, DEFAULT_PROFILE_LEN//2), dtype=int)
 
 
+SERVO_EVENTS = (
+    'normalize',
+    'stop',
+    'start',
+)

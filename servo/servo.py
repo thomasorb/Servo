@@ -9,12 +9,14 @@ from . import core
 from . import viewer
 from . import logger
 from . import piezo
+from . import config
+from . import fsm
 
 log = logging.getLogger(__name__)
     
 
 
-def worker_process(queue, data, WorkerClass, stop_event, priority=None):
+def worker_process(queue, data, WorkerClass, events, priority=None):
     """
     Subprocess that:
       - configures logging
@@ -36,10 +38,10 @@ def worker_process(queue, data, WorkerClass, stop_event, priority=None):
     log.info("Worker started")
 
     worker = None
-
+    
     try:
         # Instantiate user worker
-        worker = WorkerClass(data, stop_event)
+        worker = WorkerClass(data, events)
         worker.run()
 
     except Exception:
@@ -54,8 +56,16 @@ def worker_process(queue, data, WorkerClass, stop_event, priority=None):
 
         log.info("Worker terminated cleanly")
 
-
+    
 def run(mode='loop', nocam=False, noviewer=False):
+
+
+    event_manager = multiprocessing.Manager()
+    events = event_manager.dict()
+
+    for iname in config.SERVO_EVENTS:
+        events[iname] = event_manager.Event()
+
     try:
         psutil.Process().nice(0)  # privilégier uniquement ce worker
     except psutil.AccessDenied:
@@ -65,28 +75,31 @@ def run(mode='loop', nocam=False, noviewer=False):
 
     data = core.SharedData()
 
+
+    ## start Servo FSM
+    servo_fsm = fsm.ServoFSM()
+    event_bridge = fsm.MPEventBridge(servo_fsm, events)
     
     ## start all threads
     workers = list()
 
+    def start_worker(WorkerClass, priority):
+        stop_event_name = f"{WorkerClass.__name__}.stop"
+        events[stop_event_name] = event_manager.Event()
+        
+        worker = multiprocessing.Process(target=worker_process,
+                                         args=(queue, data, WorkerClass,
+                                               events, priority))
+        workers.append((worker, stop_event_name))
+        worker.start()
+
+
     # start ir camera
     if not nocam:
-        ircam_stop_event = multiprocessing.Event()
-        ircam_worker = multiprocessing.Process(target=worker_process,
-                                               args=(queue, data, ircam.IRCamera,
-                                                     ircam_stop_event, -20))
-        workers.append((ircam_worker, ircam_stop_event))
-        ircam_worker.start()
+        start_worker(ircam.IRCamera, -20)
     
     # start piezos
-    piezo_stop_event = multiprocessing.Event()
-    piezo_worker = multiprocessing.Process(target=worker_process,
-                                           args=(queue, data, piezo.DAQ,
-                                                 piezo_stop_event, 0))
-    workers.append((piezo_worker, piezo_stop_event))
-    piezo_worker.start()
-    
-    
+    start_worker(piezo.DAQ, 0)
         
     # start viewer
     if not noviewer:
@@ -94,27 +107,34 @@ def run(mode='loop', nocam=False, noviewer=False):
             while True:
                 time.sleep(0.1)
                 if data['IRCamera.initialized'][0]: break
-        viewer_stop_event = multiprocessing.Event()
-        viewer_worker = multiprocessing.Process(target=worker_process,
-                                                args=(queue, data, viewer.Viewer,
-                                                      viewer_stop_event, 10))
-        workers.append((viewer_worker, viewer_stop_event))
-        viewer_worker.start()
+        start_worker(viewer.Viewer, 10)
 
-
-    input('press any key to exit\n')
-
+    # start servo
+    events['start'].set()
+    
+    # running loop
+    while True:
+        try:
+            event_bridge.poll()
+            if servo_fsm.state is fsm.FsmState.STOPPED:
+                break
+            time.sleep(0.1)
+        except KeyboardInterrupt:
+            log.error('Keyboard interrupt')
+            break
+        
     # Graceful stop
     for p, ev in workers:
         time.sleep(1)
-        ev.set()
+        events[ev].set()
 
     # Wait for clean exit
     for p, _ in workers:
         p.join(timeout=5)
 
     data.stop() # must be done before any exit kill
-
+    del event_manager
+    
     # Fallback kill if needed
     for p, _ in workers:
         if p.is_alive():

@@ -14,8 +14,8 @@ log = logging.getLogger(__name__)
 
 class DAQ(core.Worker):
 
-    def __init__(self, data, stop_event):
-        super().__init__(data, stop_event)
+    def __init__(self, data, events):
+        super().__init__(data, events)
         
         self.daq_device = None
         
