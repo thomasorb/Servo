@@ -64,10 +64,26 @@ class SharedData(object):
         self.add_value('IRCamera.profile_x', int(config.DEFAULT_PROFILE_POSITION[0]), stored=True)
         self.add_value('IRCamera.profile_y', int(config.DEFAULT_PROFILE_POSITION[1]), stored=True)
         self.add_value('IRCamera.profile_len', int(config.DEFAULT_PROFILE_LEN), stored=True)
+
+        self.add_array('IRCamera.hnorm_min', np.zeros(config.FULL_FRAME_SHAPE[0],
+                                                      dtype=config.FRAME_DTYPE))
+        self.add_array('IRCamera.hnorm_max', np.ones(config.FULL_FRAME_SHAPE[0],
+                                                     dtype=config.FRAME_DTYPE)) 
+
+        self.add_array('IRCamera.vnorm_min', np.zeros(config.FULL_FRAME_SHAPE[1],
+                                                      dtype=config.FRAME_DTYPE))
+
+        self.add_array('IRCamera.vnorm_max', np.ones(config.FULL_FRAME_SHAPE[1],
+                                                     dtype=config.FRAME_DTYPE))
         
         self.add_array('DAQ.piezos_level',
                        np.zeros(3, dtype=config.DAQ_PIEZO_LEVELS_DTYPE),
                        stored=True)
+        
+        self.add_array('DAQ.piezos_level_actual',
+                       np.zeros(3, dtype=config.DAQ_PIEZO_LEVELS_DTYPE),
+                       stored=False)
+
 
     def add_array(self, name, array, stored=False):
         if stored:

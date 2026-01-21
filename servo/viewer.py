@@ -186,14 +186,13 @@ class Viewer(core.Worker):
                                      command=self.export_png)
         self.export_btn.pack(side=tk.LEFT, padx=10)
 
-        self.normalize_btn = ttk.Button(toolbar, text="NORMALIZE",
-                                        command=self.normalize)
-        self.normalize_btn.pack(side=tk.RIGHT, padx=10)
-
         self.stop_btn = ttk.Button(toolbar, text="STOP",
                                    command=self.stop_servo)
         self.stop_btn.pack(side=tk.RIGHT, padx=10)
 
+        self.normalize_btn = ttk.Button(toolbar, text="NORMALIZE",
+                                        command=self.normalize)
+        self.normalize_btn.pack(side=tk.RIGHT, padx=10)        
 
         # ------------------------------------------------------------------
         # Info panel
@@ -482,12 +481,12 @@ class Viewer(core.Worker):
     # COORDINATE TRANSFORMS
     # ----------------------------------------------------------------------
     def canvas_to_image(self, cx, cy):
-        ix = int((cx - self.offset_x) / self.scale)
-        iy = int((cy - self.offset_y) / self.scale)
+        iy = int((cx - self.offset_x) / self.scale)
+        ix = int((cy - self.offset_y) / self.scale)
         return ix, iy
 
     def image_to_canvas(self, ix, iy):
-        return ix*self.scale + self.offset_x, iy*self.scale + self.offset_y
+        return iy*self.scale + self.offset_x, ix*self.scale + self.offset_y
 
     # ----------------------------------------------------------------------
     # MOUSE MOVE: crosshair + pixel readout
@@ -836,6 +835,13 @@ class Viewer(core.Worker):
         if not (self.stop_event and self.stop_event.is_set()):
             self.root.after(100, self.refresh)
 
+        # update piezo levels
+        levels = self.data["DAQ.piezos_level_actual"][:3]
+        if len(levels) >= 3:
+            self.var_opd.set(float(levels[0]))
+            self.var_da1.set(float(levels[1]))
+            self.var_da2.set(float(levels[2]))
+
     # -----------------------------------------------
     # HORIZONTAL AND VERTICAL PROFILES
     # -----------------------------------------------
@@ -857,8 +863,18 @@ class Viewer(core.Worker):
         # y1 = min(h - 1, iy + r)
         # vert = self.frame[y0:y1+1, ix]
 
-        horiz = self.data['IRCamera.hprofile'][:self.data['IRCamera.profile_len'][0]]
-        vert = self.data['IRCamera.vprofile'][:self.data['IRCamera.profile_len'][0]]
+        profile_len = self.data['IRCamera.profile_len'][0]
+
+        hnorm_min = self.data['IRCamera.hnorm_min'][:profile_len]
+        hnorm_max = self.data['IRCamera.hnorm_max'][:profile_len]
+        vnorm_min = self.data['IRCamera.vnorm_min'][:profile_len]
+        vnorm_max = self.data['IRCamera.vnorm_max'][:profile_len]
+
+        horiz = self.data['IRCamera.hprofile'][:profile_len]
+        vert = self.data['IRCamera.vprofile'][:profile_len]
+
+        horiz = (horiz - hnorm_min) / (hnorm_max - hnorm_min)
+        vert = (vert - vnorm_min) / (vnorm_max - vnorm_min)
         
         # Update horizontal plot
         def draw(canvas, fig, ax, dat):
@@ -866,6 +882,7 @@ class Viewer(core.Worker):
 
             # Plot
             ax.plot(dat, color="black")
+            ax.axhline(0.75, color='tab:blue')
 
             # Remove all padding and borders
             ax.set_title("")                # remove title if you want
@@ -914,9 +931,11 @@ class Viewer(core.Worker):
             col_frame = ttk.Frame(row)
             col_frame.grid(row=0, column=col, padx=10, pady=5)
             ttk.Label(col_frame, text=label).pack(pady=(0, 6))
-            scl = ttk.Scale(col_frame, from_=10.0, to=0.0,
-                            variable=var, orient=tk.VERTICAL,
-                            length=220, command=self._on_piezos_change)
+            scl = tk.Scale(col_frame, from_=10.0, to=0.0,
+                           variable=var, orient=tk.VERTICAL,
+                           showvalue=True,
+                           resolution=0.01,
+                           length=220, command=self._on_piezos_change)
             scl.pack()
             return scl
 

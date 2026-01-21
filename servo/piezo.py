@@ -72,6 +72,9 @@ class DAQ(core.Worker):
             self.ao_device.a_out(ichannel, Range.UNI10VOLTS,
                                  AOutFlag.DEFAULT, float(ilevel))
 
+        self.data['DAQ.piezos_level_actual'][:3] = np.array(
+            levels, dtype=config.DAQ_PIEZO_LEVELS_DTYPE)
+
     def cleanup(self):
         try:
             if self.daq_device is not None:

@@ -2,9 +2,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable, Dict, Optional, Any, Tuple, Mapping
 from enum import Enum, auto
-import logging
 
-from . import config
+import logging
 
 log = logging.getLogger(__name__)
 
@@ -49,7 +48,9 @@ class StateMachine:
     def dispatch(self, event: FsmEvent, payload: Any = None) -> bool:
         tr = self.table.get((self.state, event))
         if tr is None:
-            raise TransitionError(f"Invalid transition {self.state.name} --{event.name}--> ?")
+            #raise TransitionError(f"Invalid transition {self.state.name} --{event.name}--> ?")
+            log.warning(f"Invalid transition {self.state.name} --{event.name}--> ?")
+            return False
         if tr.guard and not tr.guard(self, payload):
             return False
         self._call_hook(f"on_exit_{self.state.name.lower()}", payload)
@@ -60,44 +61,5 @@ class StateMachine:
         log.info(f"{old.name} --{event.name}--> {self.state.name}")
         self._call_hook(f"on_enter_{self.state.name.lower()}", payload)
         return True
-
-
-    
-class ServoFSM(StateMachine):
-    def __init__(self, data, events):
-        self.data = data
-        self.events = events
-        table = {
-            (FsmState.IDLE,    FsmEvent.START): Transition(FsmState.RUNNING, action=self._start),
-            (FsmState.RUNNING, FsmEvent.NORMALIZE): Transition(FsmState.RUNNING, action=self._normalize),
-            (FsmState.RUNNING, FsmEvent.ERROR): Transition(FsmState.FAILED),
-            (FsmState.RUNNING, FsmEvent.STOP):  Transition(FsmState.STOPPED, action=self._stop),
-            (FsmState.FAILED,  FsmEvent.RESET): Transition(FsmState.IDLE),
-            (FsmState.STOPPED, FsmEvent.RESET): Transition(FsmState.IDLE),
-        }
-        super().__init__(FsmState.IDLE, table)
-
-
-    def poll(self):
-        evs = self.events
-
-        for iname in config.SERVO_EVENTS:
-            if evs.get(iname) and evs[iname].is_set():
-                evs[iname].clear()
-                self.dispatch(getattr(FsmEvent, iname.upper()), payload=None)
-
-    # Hooks (facultatif)
-    def on_enter_running(self, _): log.info(">> RUNNING")
-    def on_exit_running(self, _):  log.info("<< RUNNING")
-
-    # Actions
-    def _start(self, _):
-        log.info("Starting Servo")
-
-    def _normalize(self, _):
-        log.info("Normalizing")
-                
-    def _stop(self, _):
-        log.info("Stopping Servo")
 
 

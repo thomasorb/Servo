@@ -1,8 +1,9 @@
-import logging
 import multiprocessing
 import time
 import traceback
 import psutil
+import logging
+import numpy as np
 
 from . import ircam
 from . import core
@@ -10,10 +11,11 @@ from . import viewer
 from . import logger
 from . import piezo
 from . import config
-from . import fsm
+from . import utils
+from .fsm import StateMachine, FsmEvent, FsmState, Transition
+
 
 log = logging.getLogger(__name__)
-    
 
 
 def worker_process(queue, data, WorkerClass, events, priority=None):
@@ -56,93 +58,163 @@ def worker_process(queue, data, WorkerClass, events, priority=None):
 
         log.info("Worker terminated cleanly")
 
-    
-def run(mode='loop', nocam=False, noviewer=False):
-
-
-    event_manager = multiprocessing.Manager()
-    events = event_manager.dict()
-
-    for iname in config.SERVO_EVENTS:
-        events[iname] = event_manager.Event()
-
-    try:
-        psutil.Process().nice(0)  # privilégier uniquement ce worker
-    except psutil.AccessDenied:
-        log.warning('priority of the process could not be changed (Acces Denied)')
+class Servo(StateMachine):
+    def __init__(self, mode='calib', noviewer=False, nocam=False):
+        self.mode = mode
+        self.noviewer = noviewer
+        self.nocam = nocam
         
-    queue = logger.get_logging_queue()
+        table = {
+            (FsmState.IDLE,    FsmEvent.START): Transition(FsmState.RUNNING, action=self._start),
+            (FsmState.RUNNING, FsmEvent.NORMALIZE): Transition(FsmState.RUNNING, action=self._normalize),
+            (FsmState.RUNNING, FsmEvent.ERROR): Transition(FsmState.FAILED),
+            (FsmState.RUNNING, FsmEvent.STOP):  Transition(FsmState.STOPPED, action=self._stop),
+            (FsmState.FAILED,  FsmEvent.RESET): Transition(FsmState.IDLE),
+            (FsmState.STOPPED, FsmEvent.RESET): Transition(FsmState.IDLE),
+        }
+        super().__init__(FsmState.IDLE, table)
 
-    data = core.SharedData()
+        self.event_manager = multiprocessing.Manager()
+        self.events = self.event_manager.dict()
 
+        for iname in config.SERVO_EVENTS:
+            self.events[iname] = self.event_manager.Event()
 
-    ## start Servo FSM
-    servo_fsm = fsm.ServoFSM(data, events)
-    
-    ## start all threads
-    workers = list()
+        self.queue = logger.get_logging_queue()
 
-    def start_worker(WorkerClass, priority):
-        stop_event_name = f"{WorkerClass.__name__}.stop"
-        events[stop_event_name] = event_manager.Event()
+        self.data = core.SharedData()
+
         
-        worker = multiprocessing.Process(target=worker_process,
-                                         args=(queue, data, WorkerClass,
-                                               events, priority))
-        workers.append((worker, stop_event_name))
-        worker.start()
+    def poll(self):
+        evs = self.events
 
+        for iname in config.SERVO_EVENTS:
+            if evs.get(iname) and evs[iname].is_set():
+                evs[iname].clear()
+                self.dispatch(getattr(FsmEvent, iname.upper()), payload=None)
 
-    # start ir camera
-    if not nocam:
-        start_worker(ircam.IRCamera, -20)
-    
-    # start piezos
-    start_worker(piezo.DAQ, 0)
-        
-    # start viewer
-    if not noviewer:
-        if not nocam:
-            while True:
+    # Hooks (facultatif)
+    def on_enter_running(self, _):
+        log.info(">> RUNNING")
+        # running loop
+        while True:
+            try:
+                self.poll()
+                if self.state is FsmState.STOPPED:
+                    break
                 time.sleep(0.1)
-                if data['IRCamera.initialized'][0]: break
-        start_worker(viewer.Viewer, 10)
+            except KeyboardInterrupt:
+                log.error('Keyboard interrupt')
+                self.events('stop').set()
+                
 
-    # start servo
-    events['start'].set()
-    
-    # running loop
-    while True:
-        try:
-            servo_fsm.poll()
-            if servo_fsm.state is fsm.FsmState.STOPPED:
-                break
-            time.sleep(0.1)
-        except KeyboardInterrupt:
-            log.error('Keyboard interrupt')
-            break
         
-    # Graceful stop
-    for p, ev in workers:
-        time.sleep(1)
-        events[ev].set()
+    def on_exit_running(self, _):
+        log.info("<< RUNNING")
 
-    # Wait for clean exit
-    for p, _ in workers:
-        p.join(timeout=5)
+    # Actions
+    def _start(self, _):
 
-    data.stop() # must be done before any exit kill
-    del event_manager
-    
-    # Fallback kill if needed
-    for p, _ in workers:
-        if p.is_alive():
-            log.error(f"{p.name} stuck, forcing terminate()")
-            p.terminate()
-            p.join()
+        log.info("Starting Servo")
+        ## start all threads
+        self.workers = list()
 
-    queue.put_nowait(None)
+        def start_worker(WorkerClass, priority):
+            stop_event_name = f"{WorkerClass.__name__}.stop"
+            self.events[stop_event_name] = self.event_manager.Event()
 
-if __name__ == '__main__':
-    main()
+            worker = multiprocessing.Process(target=worker_process,
+                                             args=(self.queue, self.data, WorkerClass,
+                                                   self.events, priority))
+            self.workers.append((worker, stop_event_name))
+            worker.start()
+
+
+        # start ir camera
+        if not self.nocam:
+            start_worker(ircam.IRCamera, -20)
+
+        # start piezos
+        start_worker(piezo.DAQ, 0)
+
+        # start viewer
+        if not self.noviewer:
+            if not self.nocam:
+                while True:
+                    time.sleep(0.1)
+                    if self.data['IRCamera.initialized'][0]: break
+            start_worker(viewer.Viewer, 10)
+
+
+    def _normalize(self, _):
+        log.info("Normalizing")
+
+        start_value = 3
+        end_value = 7
+        recall_value = self.data['DAQ.piezos_level'][0]
+
+        rec_hprofiles = list()
+        rec_vprofiles = list()
+        profile_len = self.data['IRCamera.profile_len'][0]
+        
+        def piezo_goto(val, rec=False):
+        
+            self.data['DAQ.piezos_level'][0] = np.array(
+                val, dtype=config.DAQ_PIEZO_LEVELS_DTYPE)
+
+            while True:
+                if self.data['DAQ.piezos_level_actual'][0] == val:
+                    break
+                if self.events['stop'].is_set():
+                    break
+                if rec:
+                    rec_hprofiles.append(np.copy(self.data['IRCamera.hprofile'][:profile_len]))
+                    rec_vprofiles.append(np.copy(self.data['IRCamera.vprofile'][:profile_len]))
+
+            log.info(f"OPD piezo at {self.data['DAQ.piezos_level_actual'][0]}")
+
+        piezo_goto(start_value)
+
+        piezo_goto(end_value, rec=True)
+
+        piezo_goto(recall_value)
+
+        hnorm = utils.get_normalization_coeffs(np.array(rec_hprofiles)).astype(config.FRAME_DTYPE)
+        self.data['IRCamera.hnorm_min'][:profile_len] = hnorm[:,0]
+        self.data['IRCamera.hnorm_max'][:profile_len] = hnorm[:,1]
+
+        vnorm = utils.get_normalization_coeffs(np.array(rec_vprofiles)).astype(config.FRAME_DTYPE)
+        self.data['IRCamera.vnorm_min'][:profile_len] = vnorm[:,0]
+        self.data['IRCamera.vnorm_max'][:profile_len] = vnorm[:,1]
+        
+        #np.save('hprofiles.npy', np.array(rec_hprofiles))
+        #np.save('vprofiles.npy', np.array(rec_vprofiles))
+
+            
+            
+    def _stop(self, _):
+        log.info("Stopping Servo")
+
+        # Graceful stop
+        for p, ev in self.workers:
+            time.sleep(1)
+            self.events[ev].set()
+
+        # Wait for clean exit
+        for p, _ in self.workers:
+            p.join(timeout=5)
+
+        self.data.stop() # must be done before any exit kill
+        del self.event_manager
+
+        # Fallback kill if needed
+        for p, _ in self.workers:
+            if p.is_alive():
+                log.error(f"{p.name} stuck, forcing terminate()")
+                p.terminate()
+                p.join()
+
+        self.queue.put_nowait(None)
+
+
 

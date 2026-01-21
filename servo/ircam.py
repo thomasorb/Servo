@@ -56,13 +56,15 @@ class IRCamera(core.Worker):
         # Set params value
         self.dev.updateConfig()
         self.dev.setParamValueOf("Mode", "High Speed").updateConfig()
+        self.dev.setParamValueOf("Sensor Response", 1).updateConfig()
+        
         
         self.dev.setParamValueOf("Number Of Columns", int(self.roi_shape[0]))
         self.dev.setParamValueOf("Number Of Lines", int(self.roi_shape[1]))
         self.dev.setParamValueOf("First Column", int(self.roi_position[0]))
         self.dev.setParamValueOf("First Line", int(self.roi_position[1]))
         
-        self.dev.setParamValueOf("ExposureTime", "10us" )
+        self.dev.setParamValueOf("ExposureTime", config.IRCAM_DEFAULT_EXPOSURE_TIME)
         self.dev.updateConfig()
 
         # Fps configuration: set fps to a mean value
@@ -74,11 +76,11 @@ class IRCamera(core.Worker):
         log.info(f"current fps: {self.dev.fps()}")
 
         # Set pipeline 
-        self.agc = NITLibrary.NITToolBox.NITAutomaticGainControl()
+        #self.agc = NITLibrary.NITToolBox.NITAutomaticGainControl()
         #self.player = NITLibrary.NITToolBox.NITPlayer("Player")
-        self.dev << self.agc #<< self.player
+        #self.dev << self.agc #<< self.player
         self.data_observer = DataObserver(self.data, self.roi_position, self.roi_shape)
-        self.agc << self.data_observer
+        self.dev << self.data_observer
         self.data['IRCamera.initialized'][0] = True
         
         self.dev.start()	    #Start Capture
@@ -168,7 +170,7 @@ class DataObserver(NITLibrary.NITUserObserver):
                 self.data['IRCamera.last_frame'][:self.data['IRCamera.frame_size'][0]] = frame_data
 
             try:
-            # profile x and y always set in full frame coordinates
+                # profile x and y always set in full frame coordinates
                 ix = self.data['IRCamera.profile_x'][0] - self.roi_position[0]
                 iy = self.data['IRCamera.profile_y'][0] - self.roi_position[1]
                 profile_len = self.data['IRCamera.profile_len'][0]

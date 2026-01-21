@@ -3,7 +3,7 @@ import argparse
 import logging
 
 from . import logger
-from . import servo
+from . import run
 
 def build_parser():
     """
@@ -78,6 +78,6 @@ def main():
 
     # -------- Dispatch to subcommands --------
     if args.command == "calib":
-        return servo.run(mode='calib', nocam=args.nocam, noviewer=args.noviewer)
+        return run.run(mode='calib', nocam=args.nocam, noviewer=args.noviewer)
     elif args.command == "run":
-        return servo.run(mode='loop', nocam=args.nocam, noviewer=args.noviewer)
+        return run.run(mode='loop', nocam=args.nocam, noviewer=args.noviewer)
