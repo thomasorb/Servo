@@ -2,7 +2,7 @@ import numpy as np
 import tkinter as tk
 from tkinter import ttk
 from PIL import Image, ImageTk
-#import csv
+import traceback
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import json
@@ -18,12 +18,9 @@ class Viewer(core.Worker):
     """
     Tkinter-based scientific viewer with:
     - Zoom/pan
-    - ROI tool
     - Adjustable LUTs
-    - Histogram window
     - Export to PNG
     - Piezos panel (OPD / DA-1 / DA-2)
-    - Graceful shutdown via stop_event
     """
 
     # ------------------------------------------------------------------
@@ -65,8 +62,8 @@ class Viewer(core.Worker):
         # ------------------------------------------------------------------
         # LUT
         # ------------------------------------------------------------------
-        self.current_lut_name = "gray"
-        self.lut = self.build_lut_gray()
+        self.current_lut_name = "magma"
+        self.lut = self.build_lut_magma()
 
 
         # ==================================================================
@@ -102,15 +99,32 @@ class Viewer(core.Worker):
         self._build_piezos_controls(self._right_col)
         
         # ==================================================================
-        # Profile radius input (right side, under Piezos)
+        # Profile inputs (right side, under Piezos)
         # ==================================================================
-        profile_radius_frame = ttk.LabelFrame(self._right_col, text="Profile size", padding=10)
-        profile_radius_frame.pack(fill=tk.X, expand=False, pady=15)
+        profile_len_frame = ttk.LabelFrame(self._right_col, text="Profile size", padding=10)
+        profile_len_frame.pack(fill=tk.X, expand=False, pady=15)
 
-        self.profile_radius = tk.IntVar(value=self.data['IRCamera.profile_len'][0])
-        self.profile_radius.trace_add("write", self.on_radius_changed)
-        ttk.Label(profile_radius_frame, text="Half-size (px):").pack(anchor="w")
-        ttk.Entry(profile_radius_frame, textvariable=self.profile_radius, width=8).pack(anchor="w", pady=4)
+        self.profile_len = tk.IntVar(value=self.data['IRCamera.profile_len'][0])
+        #self.profile_len.trace_add("write", self.on_len_changed)
+        ttk.Label(profile_len_frame, text="length").pack(anchor="w")
+        e = tk.Entry(profile_len_frame, textvariable=self.profile_len, width=8)
+        e.pack(anchor="w", pady=4)
+        e.bind("<Return>", self.on_len_changed)
+
+        self.profile_width = tk.IntVar(value=self.data['IRCamera.profile_width'][0])
+        #self.profile_width.trace_add("write", self.on_width_changed)
+        ttk.Label(profile_len_frame, text="width").pack(anchor="w")
+        e = tk.Entry(profile_len_frame, textvariable=self.profile_width, width=8)
+        e.pack(anchor="w", pady=4)
+        e.bind("<Return>", self.on_width_changed)
+
+        #canvas_frame = ttk.Frame(left_col)
+        #canvas_frame.pack(fill=tk.BOTH, expand=True)
+
+        self.roi_canvas = tk.Canvas(right_col, bg="black")
+        self.roi_canvas.pack(expand=False)
+        self.roi_image_id = None
+
 
         # ------------------------------------------------------------------
         # Profiles Panel (horizontal & vertical real-time profiles)
@@ -162,7 +176,7 @@ class Viewer(core.Worker):
         toolbar.pack(fill=tk.X, pady=3)
 
         ttk.Label(toolbar, text="LUT:").pack(side=tk.LEFT, padx=5)
-        self.lut_var = tk.StringVar(value="gray")
+        self.lut_var = tk.StringVar(value="magma")
         lut_choices = ["gray", "viridis", "inferno", "magma",
                        "plasma", "cividis", "turbo", "rainbow"]
         self.lut_menu = ttk.Combobox(toolbar, textvariable=self.lut_var,
@@ -170,17 +184,18 @@ class Viewer(core.Worker):
         self.lut_menu.pack(side=tk.LEFT, padx=5)
         self.lut_menu.bind("<<ComboboxSelected>>", self.on_lut_changed)
 
-        self.hist_btn = ttk.Button(toolbar, text="Show Histogram",
-                                   command=self.toggle_histogram)
-        self.hist_btn.pack(side=tk.LEFT, padx=10)
+        self.shownorm_btn = ttk.Button(toolbar, text="Show Normalized",
+                                       command=self.toggle_normalized)
+        self.shownorm_btn.pack(side=tk.LEFT, padx=10)
+        self._show_normalized = False
 
         self.reset_btn = ttk.Button(toolbar, text="Reset Zoom",
                                     command=self.reset_zoom)
         self.reset_btn.pack(side=tk.LEFT, padx=10)
 
-        self.clear_roi_btn = ttk.Button(toolbar, text="Clear ROI",
-                                        command=self.clear_roi)
-        self.clear_roi_btn.pack(side=tk.LEFT, padx=10)
+        # self.clear_roi_btn = ttk.Button(toolbar, text="Clear ROI",
+        #                                 command=self.clear_roi)
+        # self.clear_roi_btn.pack(side=tk.LEFT, padx=10)
 
         self.export_btn = ttk.Button(toolbar, text="Export PNG",
                                      command=self.export_png)
@@ -209,10 +224,6 @@ class Viewer(core.Worker):
         self.val_var = tk.StringVar(value="—")
         ttk.Label(info, textvariable=self.val_var).pack(side=tk.LEFT, padx=5)
 
-        self.roi_stats_var = tk.StringVar(value="ROI: none")
-        ttk.Label(info, textvariable=self.roi_stats_var,
-                  foreground="#5FA8FF").pack(side=tk.RIGHT, padx=10)
-
         # ------------------------------------------------------------------
         # CSV logging
         # ------------------------------------------------------------------
@@ -222,10 +233,10 @@ class Viewer(core.Worker):
         # ------------------------------------------------------------------
         # Histogram window
         # ------------------------------------------------------------------
-        self.hist_window = None
-        self.hist_canvas = None
-        self.hist_fig = None
-        self.hist_ax = None
+        # self.hist_window = None
+        # self.hist_canvas = None
+        # self.hist_fig = None
+        # self.hist_ax = None
 
         # ------------------------------------------------------------------
         # Mouse bindings
@@ -244,13 +255,12 @@ class Viewer(core.Worker):
         self.canvas.bind("<Button-4>", lambda e: self.zoom_at(e.x, e.y, 1.1))
         self.canvas.bind("<Button-5>", lambda e: self.zoom_at(e.x, e.y, 0.9))
 
+        #self.roi_canvas.bind("<Configure>", self.on_resize)
+        
         # SHIFT tool (nothing)
         
         # CTRL tool (ROI)
-        self.roi_active = False
-        self.roi_start_canvas = None
         self.roi_rect_id = None
-        self.roi_bounds_img = None
 
         self._normal_click_start = None
 
@@ -362,10 +372,9 @@ class Viewer(core.Worker):
             "turbo": self.build_lut_turbo,
             "rainbow": self.build_lut_rainbow,
         }
-        self.lut = mappingname
+        self.lut = mapping[name]()
         self.render()
-        self.update_histogram()
-
+        
     # ----------------------------------------------------------------------
     # BRIGHTNESS / CONTRAST
     # ----------------------------------------------------------------------
@@ -382,7 +391,6 @@ class Viewer(core.Worker):
         self.contrast = max(0.05, min(self.contrast, 5))
         self.last_bc_mouse = (event.x, event.y)
         self.render()
-        self.update_histogram()
 
     def bc_end(self, *_):
         self.last_bc_mouse = None
@@ -408,7 +416,8 @@ class Viewer(core.Worker):
     # RENDERING
     # ----------------------------------------------------------------------
     def render(self):
-        stretched = self.stretch_frame(self.frame)
+        # main image
+        stretched = self.stretch_frame(self.frame.T)
         rgb = self.apply_lut(stretched)
 
         disp_w = int(self.img_w * self.scale)
@@ -420,21 +429,31 @@ class Viewer(core.Worker):
         if self.image_id is None:
             self.image_id = self.canvas.create_image(self.offset_x, self.offset_y,
                                                      anchor="nw", image=self.tk_image)
+
         else:
             self.canvas.itemconfig(self.image_id, image=self.tk_image)
 
         self.canvas.coords(self.image_id, self.offset_x, self.offset_y)
 
-        # ROI overlay
-        if self.roi_bounds_img:
-            x0, y0, x1, y1 = self.roi_bounds_img
-            cx0, cy0 = self.image_to_canvas(x0, y0)
-            cx1, cy1 = self.image_to_canvas(x1, y1)
-            if self.roi_rect_id is None:
-                self.roi_rect_id = self.canvas.create_rectangle(
-                    cx0, cy0, cx1, cy1, outline="#5FA8FF", width=2)
+        # roi image
+        if hasattr(self, 'roi_image'):
+            stretched = self.stretch_frame(self.roi_image.T)
+            rgb = self.apply_lut(stretched)
+
+            w = max(1, self.roi_canvas.winfo_width())
+            h = max(1, self.roi_canvas.winfo_height())
+
+            pil_img = Image.fromarray(rgb, "RGB").resize((w, h), Image.NEAREST)
+
+            self.tk_roi = ImageTk.PhotoImage(pil_img)
+            
+            if self.roi_image_id is None:
+                self.roi_image_id = self.roi_canvas.create_image(0, 0, anchor="nw",
+                                                                 image=self.tk_roi)
             else:
-                self.canvas.coords(self.roi_rect_id, cx0, cy0, cx1, cy1)
+                self.roi_canvas.itemconfig(self.roi_image_id, image=self.tk_roi)
+
+            self.roi_canvas.coords(self.roi_image_id, 0,0)
 
         # Markers
         r = 4
@@ -442,6 +461,18 @@ class Viewer(core.Worker):
             cx, cy = self.image_to_canvas(ix, iy)
             self.canvas.coords(item_id, cx-r, cy-r, cx+r, cy+r)
             self.canvas.tag_raise(item_id)
+
+            # ROI overlay
+            hw = self.data['IRCamera.profile_len'][0]//2
+            x0, y0, x1, y1 = ix-hw, iy-hw, ix+hw, iy+hw
+            cx0, cy0 = self.image_to_canvas(x0, y0)
+            cx1, cy1 = self.image_to_canvas(x1, y1)
+            if self.roi_rect_id is None:
+                self.roi_rect_id = self.canvas.create_rectangle(
+                    cx0, cy0, cx1, cy1, outline="#5FA8FF", width=2)
+            else:
+                self.canvas.coords(self.roi_rect_id, cx0, cy0, cx1, cy1)
+            self.canvas.tag_raise(self.roi_rect_id)
 
         self.canvas.tag_raise(self.cross_h)
         self.canvas.tag_raise(self.cross_v)
@@ -458,8 +489,18 @@ class Viewer(core.Worker):
             self.scale = min(cw/self.img_w, ch/self.img_h)
             self.offset_x = (cw - self.img_w*self.scale) / 2
             self.offset_y = (ch - self.img_h*self.scale) / 2
+
+            size = max(1, min(self._right_col.winfo_width(), self._right_col.winfo_height()))
+
+            # Redimensionner le canvas pour qu'il soit carré
+            self.roi_canvas.config(width=size, height=size)
+
+            # Le repositionner au centre
+            #self.roi_canvas.place(relx=0.5, rely=0.5, anchor="center", width=size, height=size)
+
             self.fitted = True
             self.render()
+
 
     def reset_zoom(self):
         self.fitted = False
@@ -481,12 +522,12 @@ class Viewer(core.Worker):
     # COORDINATE TRANSFORMS
     # ----------------------------------------------------------------------
     def canvas_to_image(self, cx, cy):
-        iy = int((cx - self.offset_x) / self.scale)
-        ix = int((cy - self.offset_y) / self.scale)
+        ix = int((cx - self.offset_x) / self.scale)
+        iy = int((cy - self.offset_y) / self.scale)
         return ix, iy
 
     def image_to_canvas(self, ix, iy):
-        return iy*self.scale + self.offset_x, ix*self.scale + self.offset_y
+        return ix*self.scale + self.offset_x, iy*self.scale + self.offset_y
 
     # ----------------------------------------------------------------------
     # MOUSE MOVE: crosshair + pixel readout
@@ -494,10 +535,9 @@ class Viewer(core.Worker):
     def on_mouse_move(self, event):
         ix, iy = self.canvas_to_image(event.x, event.y)
         
-        
         if 0 <= ix < self.img_w and 0 <= iy < self.img_h:
             self.pos_var.set(f"x = {ix}, y = {iy}")
-            self.val_var.set(f"{float(self.frame[iy, ix]):.3f}")
+            self.val_var.set(f"{float(self.frame[ix, iy]):.3f}")
         else:
             self.pos_var.set("x = —, y = —")
             self.val_var.set("—")
@@ -508,13 +548,14 @@ class Viewer(core.Worker):
                            event.x, self.canvas.winfo_height())
 
     # ----------------------------------------------------------------------
-    # LEFT CLICK: marker / ROI
+    # LEFT CLICK: marker
     # ----------------------------------------------------------------------
     def on_left_press_dispatch(self, event):
         if event.state & 0x0001:   # SHIFT
             pass
         elif event.state & 0x0004: # CTRL
-            self.roi_start_event(event)
+            #self.roi_start_event(event)
+            pass
         else:
             self._normal_click_start = (event.x, event.y)
 
@@ -522,10 +563,11 @@ class Viewer(core.Worker):
         if event.state & 0x0001:
             pass
         elif event.state & 0x0004:
-            self.roi_drag_event(event)
+            #self.roi_drag_event(event)
+            pass
 
     def add_marker(self, ix, iy):
-        val = float(self.frame[iy, ix])
+        val = float(self.frame[ix, iy])
         
         # Remove old markers
         for item, _, _ in self.points:
@@ -540,9 +582,9 @@ class Viewer(core.Worker):
         self.points.append((p, ix, iy))
             
     def on_left_release_dispatch(self, event):
-        if self.roi_active:
-            self.roi_end_event(event)
-            return
+        #if self.roi_active:
+        #    self.roi_end_event(event)
+        #    return
 
         # Normal click → marker + CSV
         if self._normal_click_start:
@@ -556,85 +598,103 @@ class Viewer(core.Worker):
             self._normal_click_start = None
 
     
-    def on_radius_changed(self, *args):
-        log.info("Profile radius updated:", self.profile_radius.get())
-        self.data['IRCamera.profile_len'][0] = int(self.profile_radius.get())
-        if self.points:
-            _, mx, my = self.points[0]
-            self.update_profiles(mx, my)
+    def on_len_changed(self, *args):
+        profile_len = self.profile_len.get()
+        if profile_len%2:
+            profile_len += 1
+            self.profile_len.set(profile_len)
+            log.warning(f'profile_len must be even, changed to {profile_len}')
+        
+        log.info(f"Profile length updated: {profile_len}")
+        
+        self.data['IRCamera.profile_len'][0] = int(self.profile_len.get())
+        if hasattr(self, 'points'):
+            if self.points:
+                _, mx, my = self.points[0]
+                self.update_profiles(mx, my)
 
+    def on_width_changed(self, *args):
+        profile_width = self.profile_width.get()
+        if profile_width%2:
+            profile_width += 1
+            self.profile_width.set(profile_width)
+            log.warning(f'profile_width must be even, changed to {profile_width}')
+        
+        log.info(f"Profile width updated: {profile_width}")
+                
+        self.data['IRCamera.profile_width'][0] = int(self.profile_width.get())
 
 
     # ----------------------------------------------------------------------
     # ROI TOOL
     # ----------------------------------------------------------------------
-    def roi_start_event(self, event):
-        ix, iy = self.canvas_to_image(event.x, event.y)
-        if not (0 <= ix < self.img_w and 0 <= iy < self.img_h):
-            return
-        self.roi_active = True
-        self.roi_start_canvas = (event.x, event.y)
-        if self.roi_rect_id:
-            self.canvas.delete(self.roi_rect_id)
-        self.roi_rect_id = None
-        self.roi_bounds_img = None
-        self.roi_stats_var.set("ROI: drawing…")
+    # def roi_start_event(self, event):
+    #     ix, iy = self.canvas_to_image(event.x, event.y)
+    #     if not (0 <= ix < self.img_w and 0 <= iy < self.img_h):
+    #         return
+    #     self.roi_active = True
+    #     self.roi_start_canvas = (event.x, event.y)
+    #     if self.roi_rect_id:
+    #         self.canvas.delete(self.roi_rect_id)
+    #     self.roi_rect_id = None
+    #     self.roi_bounds_img = None
+    #     self.roi_stats_var.set("ROI: drawing…")
 
-    def roi_drag_event(self, event):
-        if not self.roi_active:
-            return
-        x0, y0 = self.roi_start_canvas
-        x1, y1 = event.x, event.y
-        if self.roi_rect_id:
-            self.canvas.coords(self.roi_rect_id, x0, y0, x1, y1)
-        else:
-            self.roi_rect_id = self.canvas.create_rectangle(
-                x0, y0, x1, y1, outline="#5FA8FF", width=2)
+    # def roi_drag_event(self, event):
+    #     if not self.roi_active:
+    #         return
+    #     x0, y0 = self.roi_start_canvas
+    #     x1, y1 = event.x, event.y
+    #     if self.roi_rect_id:
+    #         self.canvas.coords(self.roi_rect_id, x0, y0, x1, y1)
+    #     else:
+    #         self.roi_rect_id = self.canvas.create_rectangle(
+    #             x0, y0, x1, y1, outline="#5FA8FF", width=2)
 
-    def roi_end_event(self, event):
-        if not self.roi_active:
-            return
-        self.roi_active = False
-        if not self.roi_rect_id:
-            self.roi_stats_var.set("ROI: none")
-            return
+    # def roi_end_event(self, event):
+    #     if not self.roi_active:
+    #         return
+    #     self.roi_active = False
+    #     if not self.roi_rect_id:
+    #         self.roi_stats_var.set("ROI: none")
+    #         return
 
-        cx0, cy0 = self.roi_start_canvas
-        cx1, cy1 = event.x, event.y
-        ix0, iy0 = self.canvas_to_image(cx0, cy0)
-        ix1, iy1 = self.canvas_to_image(cx1, cy1)
+    #     cx0, cy0 = self.roi_start_canvas
+    #     cx1, cy1 = event.x, event.y
+    #     ix0, iy0 = self.canvas_to_image(cx0, cy0)
+    #     ix1, iy1 = self.canvas_to_image(cx1, cy1)
 
-        x0, x1 = sorted((max(0, ix0), min(self.img_w-1, ix1)))
-        y0, y1 = sorted((max(0, iy0), min(self.img_h-1, iy1)))
+    #     x0, x1 = sorted((max(0, ix0), min(self.img_w-1, ix1)))
+    #     y0, y1 = sorted((max(0, iy0), min(self.img_h-1, iy1)))
 
-        if x1 <= x0 or y1 <= y0:
-            self.clear_roi()
-            return
+    #     if x1 <= x0 or y1 <= y0:
+    #         self.clear_roi()
+    #         return
 
-        self.roi_bounds_img = (x0, y0, x1, y1)
-        self.render()
+    #     self.roi_bounds_img = (x0, y0, x1, y1)
+    #     self.render()
 
-        roi = self.frame[y0:y1, x0:x1]
-        count = roi.size
-        vmin = float(np.min(roi))
-        vmax = float(np.max(roi))
-        vmean = float(np.mean(roi))
-        vstd = float(np.std(roi))
+    #     roi = self.frame[y0:y1, x0:x1]
+    #     count = roi.size
+    #     vmin = float(np.min(roi))
+    #     vmax = float(np.max(roi))
+    #     vmean = float(np.mean(roi))
+    #     vstd = float(np.std(roi))
 
-        self.roi_stats_var.set(
-            f"ROI: {x1-x0}×{y1-y0} "
-            f"min={vmin:.3f} max={vmax:.3f} "
-            f"mean={vmean:.3f} std={vstd:.3f} n={count}"
-        )
-        self.update_histogram()
+    #     self.roi_stats_var.set(
+    #         f"ROI: {x1-x0}×{y1-y0} "
+    #         f"min={vmin:.3f} max={vmax:.3f} "
+    #         f"mean={vmean:.3f} std={vstd:.3f} n={count}"
+    #     )
+    #     self.update_histogram()
 
-    def clear_roi(self):
-        if self.roi_rect_id:
-            self.canvas.delete(self.roi_rect_id)
-        self.roi_rect_id = None
-        self.roi_bounds_img = None
-        self.roi_stats_var.set("ROI: none")
-        self.update_histogram()
+    # def clear_roi(self):
+    #     if self.roi_rect_id:
+    #         self.canvas.delete(self.roi_rect_id)
+    #     self.roi_rect_id = None
+    #     self.roi_bounds_img = None
+    #     self.roi_stats_var.set("ROI: none")
+    #     self.update_histogram()
 
     # # ----------------------------------------------------------------------
     # # CSV LOGGING
@@ -653,52 +713,52 @@ class Viewer(core.Worker):
     # ----------------------------------------------------------------------
     # HISTOGRAM WINDOW
     # ----------------------------------------------------------------------
-    def toggle_histogram(self):
-        if self.hist_window:
-            self.close_histogram()
-            self.hist_btn.config(text="Show Histogram")
+    def toggle_normalized(self):
+        if self._show_normalized:
+            self._show_normalized = False
+            self.shownorm_btn.config(text="Show Normalized")
         else:
-            self.open_histogram()
-            self.hist_btn.config(text="Hide Histogram")
+            self._show_normalized = True
+            self.shownorm_btn.config(text="Show Unormalized")
 
-    def open_histogram(self):
-        self.hist_window = tk.Toplevel(self.root)
-        self.hist_window.title("Histogram")
+    # def open_histogram(self):
+    #     self.hist_window = tk.Toplevel(self.root)
+    #     self.hist_window.title("Histogram")
 
-        self.hist_fig = plt.Figure(figsize=(4.5, 3.2), dpi=100)
-        self.hist_ax = self.hist_fig.add_subplot(111)
-        self.hist_canvas = FigureCanvasTkAgg(self.hist_fig, master=self.hist_window)
-        self.hist_canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+    #     self.hist_fig = plt.Figure(figsize=(4.5, 3.2), dpi=100)
+    #     self.hist_ax = self.hist_fig.add_subplot(111)
+    #     self.hist_canvas = FigureCanvasTkAgg(self.hist_fig, master=self.hist_window)
+    #     self.hist_canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
 
-        self.update_histogram()
+    #     self.update_histogram()
 
-    def close_histogram(self):
-        if self.hist_window:
-            self.hist_window.destroy()
-        self.hist_window = None
+    # def close_histogram(self):
+    #     if self.hist_window:
+    #         self.hist_window.destroy()
+    #     self.hist_window = None
 
-    def update_histogram(self):
-        if not self.hist_window:
-            return
-        self.hist_ax.clear()
+    # def update_histogram(self):
+    #     if not self.hist_window:
+    #         return
+    #     self.hist_ax.clear()
 
-        data = self.frame.flatten()
-        self.hist_ax.hist(data, bins=100, color="white",
-                          alpha=0.9, label="Image", density=True)
+    #     data = self.frame.flatten()
+    #     self.hist_ax.hist(data, bins=100, color="white",
+    #                       alpha=0.9, label="Image", density=True)
 
-        if self.roi_bounds_img:
-            x0, y0, x1, y1 = self.roi_bounds_img
-            roi = self.frame[y0:y1, x0:x1].flatten()
-            if roi.size > 0:
-                self.hist_ax.hist(roi, bins=100, color="#5FA8FF",
-                                  alpha=0.6, label="ROI", density=True)
+    #     if self.roi_bounds_img:
+    #         x0, y0, x1, y1 = self.roi_bounds_img
+    #         roi = self.frame[y0:y1, x0:x1].flatten()
+    #         if roi.size > 0:
+    #             self.hist_ax.hist(roi, bins=100, color="#5FA8FF",
+    #                               alpha=0.6, label="ROI", density=True)
 
-        self.hist_ax.set_title("Histogram")
-        self.hist_ax.set_xlabel("Pixel Value")
-        self.hist_ax.set_ylabel("Count")
-        self.hist_ax.grid(alpha=0.3)
-        self.hist_ax.legend(loc="upper right")
-        self.hist_canvas.draw()
+    #     self.hist_ax.set_title("Histogram")
+    #     self.hist_ax.set_xlabel("Pixel Value")
+    #     self.hist_ax.set_ylabel("Count")
+    #     self.hist_ax.grid(alpha=0.3)
+    #     self.hist_ax.legend(loc="upper right")
+    #     self.hist_canvas.draw()
 
     # ----------------------------------------------------------------------
     # EXPORT PNG
@@ -813,24 +873,49 @@ class Viewer(core.Worker):
 
         try:
             raw = self.data['IRCamera.last_frame'][
-                :self.data['IRCamera.frame_size'][0]
+                 :self.data['IRCamera.frame_size'][0]
             ]
-            new_frame = np.array(raw).reshape((self.img_w, self.img_h)).T
+            new_frame = np.array(raw).reshape((self.img_w, self.img_h))
             self.frame = new_frame
-            self.render()
-            self.update_histogram()
             
         except Exception as e:
-            log.error(f'error at frame refresh {e}')
+            log.error(f'error at frame refresh: {e}')
+
+        try:
+            # profile_len may be different from profile_len set in viewer
+            profile_len = self.data['IRCamera.profile_len'][0]
+            self.roi_shape = (profile_len, profile_len)
+            raw = self.data['IRCamera.roi'][
+                 :profile_len**2]
+            new_frame = np.array(raw).reshape(self.roi_shape)
+
+            if self._show_normalized:                
+                raw_min = self.data['IRCamera.roinorm_min'][:profile_len**2]
+                raw_min = np.array(raw_min).reshape(self.roi_shape)
+                raw_max = self.data['IRCamera.roinorm_max'][:profile_len**2]
+                raw_max = np.array(raw_max).reshape(self.roi_shape)
+                new_frame = np.clip((new_frame - raw_min) / (raw_max - raw_min), 0, 1)
+            self.roi_image = new_frame
+            
+            
+        except Exception as e:
+            log.error(f'error at frame refresh: {e}')
+
+        try:
+            self.render()
+        except Exception as e:
+            log.error(f'error at rendering: {traceback.format_exc()}')
+
         
         # Update profiles centered on marker (if one exists)
-        if self.points:
-            _, mx, my = self.points[0]
-            if 0 <= mx < self.img_w and 0 <= my < self.img_h:
-                try:
-                    self.update_profiles(mx, my)
-                except Exception:
-                    pass
+        if hasattr(self, 'points'):
+            if self.points:
+                _, mx, my = self.points[0]
+                if 0 <= mx < self.img_w and 0 <= my < self.img_h:
+                    try:
+                        self.update_profiles(mx, my)
+                    except Exception as e:
+                        print(e)
 
         if not (self.stop_event and self.stop_event.is_set()):
             self.root.after(100, self.refresh)
@@ -850,7 +935,7 @@ class Viewer(core.Worker):
         Update horizontal & vertical profiles centered on (ix, iy)
         using the radius given by user.
         """
-        # r = int(self.profile_radius.get())
+        # r = int(self.profile_len.get())
         # h, w = self.frame.shape
 
         # # Horizontal window: y = iy, x in [ix-r, ix+r]
@@ -873,19 +958,20 @@ class Viewer(core.Worker):
         horiz = self.data['IRCamera.hprofile'][:profile_len]
         vert = self.data['IRCamera.vprofile'][:profile_len]
 
-        horiz = (horiz - hnorm_min) / (hnorm_max - hnorm_min)
-        vert = (vert - vnorm_min) / (vnorm_max - vnorm_min)
+        if self._show_normalized:
+            horiz = (horiz - hnorm_min) / (hnorm_max - hnorm_min)
+            vert = (vert - vnorm_min) / (vnorm_max - vnorm_min)
         
         # Update horizontal plot
-        def draw(canvas, fig, ax, dat):
+        def draw(canvas, fig, ax, dat, title):
             ax.clear()
 
             # Plot
-            ax.plot(dat, color="black")
-            ax.axhline(0.75, color='tab:blue')
+            ax.plot(dat, color="tab:red", label=title)
+            ax.axhline(0.75, color='tab:gray')
 
             # Remove all padding and borders
-            ax.set_title("")                # remove title if you want
+            ax.set_title(title)             
             ax.set_ylim(0, 1)
             ax.set_xlim(0, len(dat))
 
@@ -897,12 +983,13 @@ class Viewer(core.Worker):
 
             # Remove all padding around the figure
             ax.set_position([0, 0, 1, 1])
+            ax.legend(loc='upper right')
             fig.subplots_adjust(left=0, right=1, top=1, bottom=0)
 
             canvas.draw()
 
-        draw(self.canvas_h, self.fig_h, self.ax_h, horiz)
-        draw(self.canvas_v, self.fig_v, self.ax_v, vert)
+        draw(self.canvas_h, self.fig_h, self.ax_h, horiz, 'h profile')
+        draw(self.canvas_v, self.fig_v, self.ax_v, vert, 'v profile')
        
     # ----------------------------------------------------------------------
     # PIEZOS PANEL

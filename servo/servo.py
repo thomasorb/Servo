@@ -156,6 +156,11 @@ class Servo(StateMachine):
         rec_hprofiles = list()
         rec_vprofiles = list()
         profile_len = self.data['IRCamera.profile_len'][0]
+
+        rec_rois = list()
+        dimx = self.data['IRCamera.frame_dimx'][0]
+        dimy = self.data['IRCamera.frame_dimy'][0]
+        frame_size = self.data['IRCamera.frame_size'][0]
         
         def piezo_goto(val, rec=False):
         
@@ -170,7 +175,9 @@ class Servo(StateMachine):
                 if rec:
                     rec_hprofiles.append(np.copy(self.data['IRCamera.hprofile'][:profile_len]))
                     rec_vprofiles.append(np.copy(self.data['IRCamera.vprofile'][:profile_len]))
-
+                    rec_rois.append(np.copy(self.data['IRCamera.roi'][:profile_len**2]).reshape((
+                        profile_len, profile_len)))
+                
             log.info(f"OPD piezo at {self.data['DAQ.piezos_level_actual'][0]}")
 
         piezo_goto(start_value)
@@ -186,9 +193,15 @@ class Servo(StateMachine):
         vnorm = utils.get_normalization_coeffs(np.array(rec_vprofiles)).astype(config.FRAME_DTYPE)
         self.data['IRCamera.vnorm_min'][:profile_len] = vnorm[:,0]
         self.data['IRCamera.vnorm_max'][:profile_len] = vnorm[:,1]
+
+        roinorm_min, roinorm_max = utils.get_roi_normalization_coeffs(
+            np.array(rec_rois))
+        self.data['IRCamera.roinorm_min'][:profile_len**2] = roinorm_min.astype(config.FRAME_DTYPE).flatten()
+        self.data['IRCamera.roinorm_max'][:profile_len**2] = roinorm_max.astype(config.FRAME_DTYPE).flatten()
         
-        #np.save('hprofiles.npy', np.array(rec_hprofiles))
-        #np.save('vprofiles.npy', np.array(rec_vprofiles))
+        np.save('hprofiles.npy', np.array(rec_hprofiles))
+        np.save('vprofiles.npy', np.array(rec_vprofiles))
+        np.save('rois.npy', np.array(rec_rois))
 
             
             

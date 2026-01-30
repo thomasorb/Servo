@@ -66,30 +66,3 @@ def get_normalization_coeffs(profiles):
         isin = profiles[int(len(profiles)*0.7):,i]
         coeffs.append(get_min_max(isin, plot=False))
     return np.array(coeffs)
-
-def get_roi_normalization_coeffs(rois):
-    vmin, vmax = np.percentile(rois[:int(0.7*len(rois)),::], [4,96], axis=0)
-    return vmin, vmax
-
-def compute_profiles(a, x, y, w, l, sanity_check=True, get_roi=True):
-    assert not(w%2), f'w should be even {w}'
-    assert not(l%2), f'l should be even {l}'
-    hw = w//2
-    hl = l//2
-    hbar = a[max(0, x - hl): min(x + hl, a.shape[0]), 
-             max(0, y - hw): min(y + hw, a.shape[1])]
-    hprofile = np.mean(hbar, axis=1)
-    vbar = a[max(0, x - hw): min(x + hw, a.shape[0]),
-             max(0, y - hl): min(y + hl, a.shape[1])]
-    vprofile = np.mean(vbar, axis=0)
-    if sanity_check:
-        assert hbar.shape == (l, w), 'profile is taken too near the border given w and l'
-        assert vbar.shape == (w, l), 'profile is taken too near the border given w and l'
-
-    if get_roi:
-        roi = a[max(0, x - hl): min(x + hl, a.shape[0]),
-                max(0, y - hl): min(y + hl, a.shape[1])]
-        
-        return hprofile, vprofile, roi
-    else: return hprofile, vprofile
-

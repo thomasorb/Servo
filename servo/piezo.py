@@ -31,7 +31,6 @@ class DAQ(core.Worker):
         for i in range(number_of_devices):
             log.info(f' [{i}] {devices[i].product_name} ({devices[i].unique_id})')
 
-
         self.daq_device = DaqDevice(devices[0])
         # Get AoDevice and AoInfo objects for the analog input subsystem
         self.ao_device = self.daq_device.get_ao_device()
@@ -53,7 +52,10 @@ class DAQ(core.Worker):
         levels = self.data['DAQ.piezos_level'][:3]
 
         # smooth level change on piezos
-        if self.last_levels is not None:
+        if self.last_levels is None:
+            self.last_levels = levels
+
+        else:
             new_levels = list()
             for ilevel, ilast_level in zip(levels, self.last_levels):
                 if np.abs(ilevel - ilast_level) > config.DAQ_MAX_LEVEL_CHANGE:
@@ -65,15 +67,16 @@ class DAQ(core.Worker):
 
             levels = new_levels
 
-        self.last_levels = levels
+            self.last_levels = levels
 
-        for (ichannel, ilevel) in zip(config.DAQ_PIEZO_CHANNELS, levels):
+            for (ichannel, ilevel) in zip(config.DAQ_PIEZO_CHANNELS, levels):
+                
+                self.ao_device.a_out(ichannel, Range.UNI10VOLTS,
+                                     AOutFlag.DEFAULT, float(ilevel))
+            
 
-            self.ao_device.a_out(ichannel, Range.UNI10VOLTS,
-                                 AOutFlag.DEFAULT, float(ilevel))
-
-        self.data['DAQ.piezos_level_actual'][:3] = np.array(
-            levels, dtype=config.DAQ_PIEZO_LEVELS_DTYPE)
+            self.data['DAQ.piezos_level_actual'][:3] = np.array(
+                levels, dtype=config.DAQ_PIEZO_LEVELS_DTYPE)
 
     def cleanup(self):
         try:

@@ -7,6 +7,7 @@ from . import NITLibrary_x64_382_py312 as NITLibrary
 
 from . import core
 from . import config
+from . import utils
 
 log = logging.getLogger(__name__)
 
@@ -57,7 +58,7 @@ class IRCamera(core.Worker):
         self.dev.updateConfig()
         self.dev.setParamValueOf("Mode", "High Speed").updateConfig()
         self.dev.setParamValueOf("Sensor Response", 1).updateConfig()
-        
+        self.dev.setParamValueOf("Analog Gain", "Low").updateConfig()
         
         self.dev.setParamValueOf("Number Of Columns", int(self.roi_shape[0]))
         self.dev.setParamValueOf("Number Of Lines", int(self.roi_shape[1]))
@@ -148,7 +149,7 @@ class DataObserver(NITLibrary.NITUserObserver):
         self.stats_last_index = 0
         
         
-    def onNewFrame(self, frame):
+    def onNewFrame(self, frame, get_roi=True):
         try:
             index = int(frame.id()) - 1
             frame_time = time.time()
@@ -174,21 +175,32 @@ class DataObserver(NITLibrary.NITUserObserver):
                 ix = self.data['IRCamera.profile_x'][0] - self.roi_position[0]
                 iy = self.data['IRCamera.profile_y'][0] - self.roi_position[1]
                 profile_len = self.data['IRCamera.profile_len'][0]
+                profile_width = self.data['IRCamera.profile_width'][0]
                 ilen = int(profile_len)
-                if ilen > np.min(self.roi_shape): ilen = np.min(self.roi_shape) 
+                if ilen > np.min(self.roi_shape): ilen = np.min(self.roi_shape)
+                iwid = int(profile_width)
 
-                hprofile = frame.data()[max(0, ix-ilen//2):min(self.roi_shape[0], ix+ilen//2), iy]
-                vprofile = frame.data()[ix, max(0, iy-ilen//2):min(self.roi_shape[1], iy+ilen//2)]
+                hprofile, vprofile, roi = utils.compute_profiles(frame.data().T, ix, iy, iwid, ilen,
+                                                                 get_roi=get_roi)
 
                 # nan padded versions
-                hprofile_np = np.full(profile_len, np.nan, dtype=hprofile.dtype)
-                hprofile_np[:np.size(hprofile)] = hprofile
+                if hprofile.size != ilen:
+                    hprofile_np = np.full(profile_len, np.nan, dtype=hprofile.dtype)
+                    hprofile_np[:np.size(hprofile)] = hprofile
+                else:
+                    hprofile_np = hprofile
 
-                vprofile_np = np.full(profile_len, np.nan, dtype=vprofile.dtype)
-                vprofile_np[:np.size(vprofile)] = vprofile
+                if vprofile.size != ilen:
+                    vprofile_np = np.full(profile_len, np.nan, dtype=vprofile.dtype)
+                    vprofile_np[:np.size(vprofile)] = vprofile
+                else:
+                    vprofile_np = vprofile
+
 
                 self.data['IRCamera.hprofile'][:profile_len] = hprofile_np
                 self.data['IRCamera.vprofile'][:profile_len] = vprofile_np
+                if get_roi:
+                    self.data['IRCamera.roi'][:profile_len**2] = roi.flatten()
             except Exception as e:
                 log.error(f'Error at reading profiles on camera {traceback.format_exc()}')
         
