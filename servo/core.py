@@ -60,7 +60,18 @@ class SharedData(object):
                                                      dtype=config.FRAME_DTYPE)) 
         self.add_array('IRCamera.vprofile', np.zeros(config.FULL_FRAME_SHAPE[1],
                                                      dtype=config.FRAME_DTYPE))
-
+        self.add_array('IRCamera.hprofile_normalized', np.zeros(config.FULL_FRAME_SHAPE[0],
+                                                                dtype=config.FRAME_DTYPE)) 
+        self.add_array('IRCamera.vprofile_normalized', np.zeros(config.FULL_FRAME_SHAPE[0],
+                                                                dtype=config.FRAME_DTYPE)) 
+        
+        
+        self.add_array('IRCamera.hprofile_levels', np.zeros(3, dtype=config.FRAME_DTYPE))
+        self.add_array('IRCamera.vprofile_levels', np.zeros(3, dtype=config.FRAME_DTYPE))
+        self.add_array('IRCamera.hprofile_levels_pos', np.zeros(3, dtype=config.FRAME_DTYPE))
+        self.add_array('IRCamera.vprofile_levels_pos', np.zeros(3, dtype=config.FRAME_DTYPE))
+        
+        
         self.add_value('IRCamera.profile_x', int(config.DEFAULT_PROFILE_POSITION[0]), stored=True)
         self.add_value('IRCamera.profile_y', int(config.DEFAULT_PROFILE_POSITION[1]), stored=True)
         self.add_value('IRCamera.profile_len', int(config.DEFAULT_PROFILE_LEN), stored=True)
@@ -77,6 +88,12 @@ class SharedData(object):
                                                       dtype=config.FRAME_DTYPE), stored=True)
         self.add_array('IRCamera.vnorm_max', np.ones(config.FULL_FRAME_SHAPE[1],
                                                      dtype=config.FRAME_DTYPE), stored=True)
+
+        # selected pixels: 0:none, 1:side, 2:center
+        self.add_array('IRCamera.pixels_x', np.zeros(config.FULL_FRAME_SHAPE[0],
+                                                     dtype=int), stored=True)
+        self.add_array('IRCamera.pixels_y', np.zeros(config.FULL_FRAME_SHAPE[1],
+                                                     dtype=int), stored=True)
         
         self.add_array('DAQ.piezos_level',
                        np.zeros(3, dtype=config.DAQ_PIEZO_LEVELS_DTYPE),

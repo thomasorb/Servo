@@ -93,3 +93,43 @@ def compute_profiles(a, x, y, w, l, sanity_check=True, get_roi=True):
         return hprofile, vprofile, roi
     else: return hprofile, vprofile
 
+def get_pixels_lists(states):
+    left = list()
+    center = list()
+    right = list()
+    center_passed = False
+    for i in range(len(states)):
+        if states[i] == 1:
+            if not center_passed:
+                left.append(i)
+            else:
+                right.append(i)
+                
+        elif states[i] == 2:
+            center.append(i)
+            if not center_passed:
+                center_passed = True
+
+    return left, center, right
+
+def get_mean_pixels_positions(pixels_lists):
+    pos = list()
+    for ilist in pixels_lists:
+        pos.append((np.max(ilist) + np.min(ilist)) / 2)
+    return pos
+        
+        
+        
+def compute_profile_levels(profile, pixels_lists, mean=True):
+    left_level = profile[pixels_lists[0]]
+    center_level = profile[pixels_lists[1]]
+    right_level = profile[pixels_lists[2]]
+
+    if mean:
+        return np.mean(left_level), np.mean(center_level), np.mean(right_level)
+    else:
+        return np.median(left_level), np.median(center_level), np.median(right_level)
+
+def normalize_profile(profile, vmin, vmax):
+    prof_norm = np.clip((profile - vmin) / (vmax - vmin), 0,1)
+    return prof_norm

@@ -147,6 +147,12 @@ class DataObserver(NITLibrary.NITUserObserver):
         self.last_frame_out_time = 0
         self.frame_out_period = 0.1 # s
         self.stats_last_index = 0
+        self.x_pixels_states = None
+        self.y_pixels_states = None
+        self.xpixels_list = None
+        self.ypixels_list = None
+        self.xpixels_list_pos = None
+        self.ypixels_list_pos = None
         
         
     def onNewFrame(self, frame, get_roi=True):
@@ -201,6 +207,43 @@ class DataObserver(NITLibrary.NITUserObserver):
                 self.data['IRCamera.vprofile'][:profile_len] = vprofile_np
                 if get_roi:
                     self.data['IRCamera.roi'][:profile_len**2] = roi.flatten()
+
+                # normalized profiles
+                hnorm_min = self.data['IRCamera.hnorm_min'][:profile_len]
+                hnorm_max = self.data['IRCamera.hnorm_max'][:profile_len]
+                vnorm_min = self.data['IRCamera.vnorm_min'][:profile_len]
+                vnorm_max = self.data['IRCamera.vnorm_max'][:profile_len]
+                hprofile_normalized = utils.normalize_profile(
+                    hprofile_np, hnorm_min, hnorm_max)
+                vprofile_normalized = utils.normalize_profile(
+                    vprofile_np, vnorm_min, vnorm_max)
+                self.data['IRCamera.hprofile_normalized'][:profile_len] = hprofile_normalized
+                self.data['IRCamera.vprofile_normalized'][:profile_len] = vprofile_normalized
+                
+                # compute levels
+                
+                x_pixels_states = self.data['IRCamera.pixels_x']
+                y_pixels_states = self.data['IRCamera.pixels_y']
+                if self.x_pixels_states is None or not np.array_equal(self.x_pixels_states, x_pixels_states):
+                    self.x_pixels_states = np.copy(x_pixels_states)
+                    self.xpixels_list = utils.get_pixels_lists(x_pixels_states)
+                    self.xpixels_list_pos = utils.get_mean_pixels_positions(self.xpixels_list)
+                    self.data['IRCamera.hprofile_levels_pos'][:3] = self.xpixels_list_pos
+                    
+                if self.y_pixels_states is None or not np.array_equal(self.y_pixels_states, y_pixels_states):
+                    self.y_pixels_states = np.copy(y_pixels_states)
+                    self.ypixels_list = utils.get_pixels_lists(y_pixels_states)
+                    self.ypixels_list_pos = utils.get_mean_pixels_positions(self.ypixels_list)
+                    self.data['IRCamera.vprofile_levels_pos'][:3] = self.ypixels_list_pos
+                    
+                self.data['IRCamera.hprofile_levels'][:3] = utils.compute_profile_levels(
+                    hprofile_normalized, self.xpixels_list)
+                self.data['IRCamera.vprofile_levels'][:3] = utils.compute_profile_levels(
+                    vprofile_normalized, self.ypixels_list)
+                
+                
+                
+                        
             except Exception as e:
                 log.error(f'Error at reading profiles on camera {traceback.format_exc()}')
         
