@@ -2,6 +2,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 import scipy.optimize
 
+from . import config
+
 def simulate_sin(n):
     x = np.linspace(0, np.random.uniform(3,5)*np.pi, n)
     y = np.sin(x + np.random.uniform(0,1)*np.pi) + 1 + np.random.uniform(0, 2)
@@ -63,12 +65,12 @@ def get_min_max(y, plot=False, sinfit=False):
 def get_normalization_coeffs(profiles):
     coeffs = list()
     for i in range(profiles.shape[1]):
-        isin = profiles[int(len(profiles)*0.7):,i]
+        isin = profiles[int(len(profiles)*config.NORMALIZATION_LEN_RATIO):,i]
         coeffs.append(get_min_max(isin, plot=False))
     return np.array(coeffs)
 
 def get_roi_normalization_coeffs(rois):
-    vmin, vmax = np.percentile(rois[:int(0.7*len(rois)),::], [4,96], axis=0)
+    vmin, vmax = np.percentile(rois[:int(len(rois)*config.NORMALIZATION_LEN_RATIO),::], [4,96], axis=0)
     return vmin, vmax
 
 def compute_profiles(a, x, y, w, l, sanity_check=True, get_roi=True):
@@ -133,3 +135,43 @@ def compute_profile_levels(profile, pixels_lists, mean=True):
 def normalize_profile(profile, vmin, vmax):
     prof_norm = np.clip((profile - vmin) / (vmax - vmin), 0,1)
     return prof_norm
+
+def compute_profiles_levels(profiles, normalization_coeffs, pixels_lists):
+    """Return an array of levels for each profile in profiles."""
+    levels = list()
+    for i in range(profiles.shape[0]):
+        inorm = normalize_profile(profiles[i],
+                                  normalization_coeffs[:,0],
+                                  normalization_coeffs[:,1])
+        levels.append(compute_profile_levels(inorm, pixels_lists, mean=True))
+    return np.array(levels)
+
+def get_ellipse_normalization_coeffs(profiles, normalization_coeffs, pixels_lists):
+    levels = compute_profiles_levels(profiles, normalization_coeffs, pixels_lists)
+    levels = levels[int(config.NORMALIZATION_LEN_RATIO*len(levels)):,:]
+    low_center_level, high_center_level = np.percentile(levels[:,1], [1, 99])
+    left_norm = (np.mean(levels[np.nonzero(levels[:,1] < low_center_level),0]),
+                 np.mean(levels[np.nonzero(levels[:,1] > high_center_level),0]))
+
+    right_norm = (np.mean(levels[np.nonzero(levels[:,1] < low_center_level),2]),
+                  np.mean(levels[np.nonzero(levels[:,1] > high_center_level),2]))
+
+    return np.array(list(left_norm) + list(right_norm))
+
+def compute_angles(levels, ellipse_norm_coeffs):
+    levels = np.copy(levels)
+    levels[0] = (levels[0] - levels[1] * (ellipse_norm_coeffs[1] - ellipse_norm_coeffs[0])
+                 - ellipse_norm_coeffs[0])
+    levels[2] = (levels[2] - levels[1] * (ellipse_norm_coeffs[3] - ellipse_norm_coeffs[2])
+                 - ellipse_norm_coeffs[2])
+    levels[1] = levels[1] - 0.5
+    left_angle = np.arctan2(levels[0], levels[1])
+    right_angle = np.arctan2(levels[2], levels[1])
+    return np.array((left_angle, right_angle))
+    
+def unwrap_angles(angles, last_angles):
+    unwrapped = np.unwrap(np.array((last_angles, angles)), axis=0, period=2*np.pi)[1]
+    return unwrapped
+
+def compute_opds(unwrapped_angles):
+    return -config.CALIBRATION_LASER_WAVELENGTH * unwrapped_angles / (2*np.pi)

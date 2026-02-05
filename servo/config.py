@@ -28,3 +28,10 @@ SERVO_EVENTS = (
     'stop',
     'start',
 )
+
+# use only this part of the profiles for normalization coeffs computation
+NORMALIZATION_LEN_RATIO = 0.7
+
+
+CALIBRATION_LASER_WAVELENGTH = 1550 # nm
+

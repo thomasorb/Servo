@@ -186,18 +186,39 @@ class Servo(StateMachine):
 
         piezo_goto(recall_value)
 
-        hnorm = utils.get_normalization_coeffs(np.array(rec_hprofiles)).astype(config.FRAME_DTYPE)
-        self.data['IRCamera.hnorm_min'][:profile_len] = hnorm[:,0]
-        self.data['IRCamera.hnorm_max'][:profile_len] = hnorm[:,1]
+        rec_hprofiles = np.array(rec_hprofiles)
+        rec_vprofiles = np.array(rec_vprofiles)
+        
+        hnorm = utils.get_normalization_coeffs(rec_hprofiles).astype(config.FRAME_DTYPE)
+        self.data['Servo.hnorm_min'][:profile_len] = hnorm[:,0]
+        self.data['Servo.hnorm_max'][:profile_len] = hnorm[:,1]
 
-        vnorm = utils.get_normalization_coeffs(np.array(rec_vprofiles)).astype(config.FRAME_DTYPE)
-        self.data['IRCamera.vnorm_min'][:profile_len] = vnorm[:,0]
-        self.data['IRCamera.vnorm_max'][:profile_len] = vnorm[:,1]
+        vnorm = utils.get_normalization_coeffs(rec_vprofiles).astype(config.FRAME_DTYPE)
+        self.data['Servo.vnorm_min'][:profile_len] = vnorm[:,0]
+        self.data['Servo.vnorm_max'][:profile_len] = vnorm[:,1]
 
         roinorm_min, roinorm_max = utils.get_roi_normalization_coeffs(
             np.array(rec_rois))
-        self.data['IRCamera.roinorm_min'][:profile_len**2] = roinorm_min.astype(config.FRAME_DTYPE).flatten()
-        self.data['IRCamera.roinorm_max'][:profile_len**2] = roinorm_max.astype(config.FRAME_DTYPE).flatten()
+        self.data['Servo.roinorm_min'][:profile_len**2] = roinorm_min.astype(config.FRAME_DTYPE).flatten()
+        self.data['Servo.roinorm_max'][:profile_len**2] = roinorm_max.astype(config.FRAME_DTYPE).flatten()
+
+        # compute ellipse normalization coeffs
+        hpixels_states = self.data['Servo.pixels_x']
+        vpixels_states = self.data['Servo.pixels_y']        
+        hpixels_lists = utils.get_pixels_lists(hpixels_states)
+        vpixels_lists = utils.get_pixels_lists(vpixels_states)
+        
+        hellipse_norm_coeffs = utils.get_ellipse_normalization_coeffs(
+            rec_hprofiles, hnorm, hpixels_lists)
+        vellipse_norm_coeffs = utils.get_ellipse_normalization_coeffs(
+            rec_vprofiles, vnorm, vpixels_lists)
+        
+        self.data['Servo.hellipse_norm_coeffs'][:4] = hellipse_norm_coeffs.astype(
+            config.FRAME_DTYPE)
+        
+        self.data['Servo.vellipse_norm_coeffs'][:4] = vellipse_norm_coeffs.astype(
+            config.FRAME_DTYPE)
+        
         
         np.save('hprofiles.npy', np.array(rec_hprofiles))
         np.save('vprofiles.npy', np.array(rec_vprofiles))

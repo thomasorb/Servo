@@ -8,6 +8,8 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import json
 from pathlib import Path
 import logging
+from collections import deque
+
 
 from . import core
 from . import config
@@ -271,6 +273,13 @@ class Viewer(core.Worker):
         right_col.pack(side=tk.RIGHT, fill=tk.Y, padx=6, pady=6)
         self._right_col = right_col
 
+        status_frame = ttk.LabelFrame(right_col, text="Status", padding=10)
+        status_frame.pack(fill=tk.X, expand=False, pady=15)
+
+        self.status_var = tk.StringVar(value="Idle")
+        ttk.Label(status_frame, textvariable=self.status_var).pack(anchor="w")
+        
+        
         # Piezos frame
         self._build_piezos_controls(self._right_col)
         
@@ -306,40 +315,76 @@ class Viewer(core.Worker):
         # Profiles Panel (horizontal & vertical real-time profiles)
         # ------------------------------------------------------------------
 
-        # Horizontal profile
+        # ===== Profiles - H row (profil + casebar on the left, ellipse_x on the right)
+        h_row = ttk.Frame(self._profiles_frame)
+        h_row.pack(fill=tk.X, expand=False, pady=6)
+
+        # left column (profil H + casebar H)
+        h_left = ttk.Frame(h_row)
+        h_left.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
         self.fig_h = plt.Figure(figsize=(6, 1.8), dpi=90)
         self.ax_h = self.fig_h.add_subplot(111)
         self.ax_h.set_title("Horizontal profile")
         self.ax_h.set_ylim(0, 1)
-
-        self.canvas_h = FigureCanvasTkAgg(self.fig_h, master=self._profiles_frame)
+        self.canvas_h = FigureCanvasTkAgg(self.fig_h, master=h_left)
         self.canvas_h.get_tk_widget().pack(fill=tk.X, padx=8, pady=4)
 
-        # --- Barre sous le profil horizontal ---
-        self.hbar = CaseBar(self._profiles_frame,
-                            count=self.profile_len.get(),     
-                            height=28,
-                            states=self.data['IRCamera.pixels_x'][:].astype(int).tolist(),
-                            on_change=self._on_hbar_change)
+        self.hbar = CaseBar(
+            h_left,
+            count=self.profile_len.get(),
+            height=28,
+            states=self.data['Servo.pixels_x'][:].astype(int).tolist(),
+            on_change=self._on_hbar_change
+        )
         self.hbar.pack(fill=tk.X, padx=8, pady=(0, 8))
+        
+        # right column (ellipse_x)
+        h_right = ttk.Frame(h_row, width=240)
+        h_right.pack(side=tk.RIGHT, fill=tk.Y, padx=8)
+        self.fig_ellx = plt.Figure(figsize=(3.0, 1.8), dpi=90)
+        self.ax_ellx = self.fig_ellx.add_subplot(111)
+        self.ax_ellx.set_title("ellipse_x")
+        self.canvas_ellx = FigureCanvasTkAgg(self.fig_ellx, master=h_right)
+        self.canvas_ellx.get_tk_widget().pack(fill=tk.BOTH, expand=True)
 
-        # Vertical profile
+        # ===== Profiles - V row (profil + casebar on the left, ellipse_y on the right)
+        v_row = ttk.Frame(self._profiles_frame)
+        v_row.pack(fill=tk.X, expand=False, pady=6)
+        
+        # left column (profil V + casebar V)
+        v_left = ttk.Frame(v_row)
+        v_left.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        
         self.fig_v = plt.Figure(figsize=(6, 1.8), dpi=90)
         self.ax_v = self.fig_v.add_subplot(111)
         self.ax_v.set_title("Vertical profile")
         self.ax_v.set_ylim(0, 1)
-
-        self.canvas_v = FigureCanvasTkAgg(self.fig_v, master=self._profiles_frame)
+        self.canvas_v = FigureCanvasTkAgg(self.fig_v, master=v_left)
         self.canvas_v.get_tk_widget().pack(fill=tk.X, padx=8, pady=4)
         
-        # --- Barre sous le profil vertical ---
-        self.vbar = CaseBar(self._profiles_frame,
-                            count=self.profile_len.get(),
-                            height=28,
-                            states=self.data['IRCamera.pixels_y'][:].astype(int).tolist(),
-                            on_change=self._on_vbar_change)
+        self.vbar = CaseBar(
+            v_left,
+            count=self.profile_len.get(),
+            height=28,
+            states=self.data['Servo.pixels_y'][:].astype(int).tolist(),
+            on_change=self._on_vbar_change
+        )
         self.vbar.pack(fill=tk.X, padx=8, pady=(0, 8))
 
+        # right column (ellipse_y)
+        v_right = ttk.Frame(v_row, width=240)
+        v_right.pack(side=tk.RIGHT, fill=tk.Y, padx=8)
+        self.fig_elly = plt.Figure(figsize=(3.0, 1.8), dpi=90)
+        self.ax_elly = self.fig_elly.add_subplot(111)
+        self.ax_elly.set_title("ellipse_y")
+        self.canvas_elly = FigureCanvasTkAgg(self.fig_elly, master=v_right)
+        self.canvas_elly.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+
+        
+        self.hlevels_buf = deque(maxlen=30)
+        self.vlevels_buf = deque(maxlen=30)
+        
         # Tk image holder
         self.root.after_idle(lambda: self.on_resize(None))
         self.tk_image = None
@@ -376,10 +421,10 @@ class Viewer(core.Worker):
         self.lut_menu.pack(side=tk.LEFT, padx=5)
         self.lut_menu.bind("<<ComboboxSelected>>", self.on_lut_changed)
 
-        self.shownorm_btn = ttk.Button(toolbar, text="Show Normalized",
+        self.shownorm_btn = ttk.Button(toolbar, text="Show Un-normalized",
                                        command=self.toggle_normalized)
         self.shownorm_btn.pack(side=tk.LEFT, padx=10)
-        self._show_normalized = False
+        self._show_normalized = True
 
         self.reset_btn = ttk.Button(toolbar, text="Reset Zoom",
                                     command=self.reset_zoom)
@@ -824,7 +869,7 @@ class Viewer(core.Worker):
     def _on_hbar_change(self, index, state, all_states):
         try:
             profile_len = self.data['IRCamera.profile_len'][0]
-            self.data["IRCamera.pixels_x"][:profile_len] = [int(s) for s in all_states]
+            self.data["Servo.pixels_x"][:profile_len] = [int(s) for s in all_states]
         except Exception as e:
             log.error(f"Error updating pixels_x: {e}")
             
@@ -832,7 +877,7 @@ class Viewer(core.Worker):
     def _on_vbar_change(self, index, state, all_states):
         try:
             profile_len = self.data['IRCamera.profile_len'][0]
-            self.data["IRCamera.pixels_y"][:profile_len] = [int(s) for s in all_states]
+            self.data["Servo.pixels_y"][:profile_len] = [int(s) for s in all_states]
         except Exception as e:
             log.error(f"Error updating pixels_y: {e}")
     
@@ -930,7 +975,7 @@ class Viewer(core.Worker):
             self.shownorm_btn.config(text="Show Normalized")
         else:
             self._show_normalized = True
-            self.shownorm_btn.config(text="Show Unormalized")
+            self.shownorm_btn.config(text="Show Un-normalized")
 
     # def open_histogram(self):
     #     self.hist_window = tk.Toplevel(self.root)
@@ -1074,6 +1119,10 @@ class Viewer(core.Worker):
         except Exception:
             pass
 
+    def update_status(self):
+        mean_opd = np.mean(self.data['IRCamera.opds'][:4])
+        self.status_var.set(f"Mean OPD: {mean_opd:.3f} nm")
+        
     # ----------------------------------------------------------------------
     # PERIODIC REFRESH (MAIN IMAGE UPDATE LOOP)
     # ----------------------------------------------------------------------
@@ -1101,9 +1150,9 @@ class Viewer(core.Worker):
             new_frame = np.array(raw).reshape(self.roi_shape)
 
             if self._show_normalized:                
-                raw_min = self.data['IRCamera.roinorm_min'][:profile_len**2]
+                raw_min = self.data['Servo.roinorm_min'][:profile_len**2]
                 raw_min = np.array(raw_min).reshape(self.roi_shape)
-                raw_max = self.data['IRCamera.roinorm_max'][:profile_len**2]
+                raw_max = self.data['Servo.roinorm_max'][:profile_len**2]
                 raw_max = np.array(raw_max).reshape(self.roi_shape)
                 new_frame = np.clip((new_frame - raw_min) / (raw_max - raw_min), 0, 1)
             self.roi_image = new_frame
@@ -1125,6 +1174,7 @@ class Viewer(core.Worker):
                 if 0 <= mx < self.img_w and 0 <= my < self.img_h:
                     try:
                         self.update_profiles(mx, my)
+                        self.update_status()
                     except Exception as e:
                         print(e)
 
@@ -1137,6 +1187,7 @@ class Viewer(core.Worker):
             self.var_opd.set(float(levels[0]))
             self.var_da1.set(float(levels[1]))
             self.var_da2.set(float(levels[2]))
+
 
     # -----------------------------------------------
     # HORIZONTAL AND VERTICAL PROFILES
@@ -1177,7 +1228,6 @@ class Viewer(core.Worker):
         # Update horizontal plot
         def draw(canvas, fig, ax, dat, title, levels, levels_pos):
             ax.clear()
-
             
             if self._show_normalized:
                 # Plot levels
@@ -1206,8 +1256,58 @@ class Viewer(core.Worker):
 
             canvas.draw()
 
+        def draw_ellipse(canvas, fig, ax, levels):
+            """
+            """
+            ax.clear()
+
+            def get_levels(index):
+                return [lvl[index] for lvl in levels]
+            
+            levels_center = get_levels(1)
+            levels_left = get_levels(0)
+            levels_right = get_levels(2)
+            
+            ax.scatter(levels_center[0], levels_left[0], color="tab:blue")
+            ax.scatter(levels_center[0], levels_right[0], color="tab:orange")
+            ax.scatter(levels_center, levels_left, color="tab:blue", alpha=0.2)
+            ax.scatter(levels_center, levels_right, color="tab:orange", alpha=0.2)
+            
+            #ax.set_title(title)
+            ax.set_xlim(-0.1, 1.1)
+            ax.set_ylim(-0.1, 1.1)
+
+            # Style compact pour rester cohérent avec tes profils
+            ax.set_xticks([])
+            ax.set_yticks([])
+            for s in ax.spines.values():
+                s.set_visible(False)
+            ax.set_position([0, 0, 1, 1])
+            fig.subplots_adjust(left=0, right=1, top=1, bottom=0)
+            ax.axvline(0, c='0.8')
+            ax.axhline(0, c='0.8')
+            ax.axvline(1, c='0.8')
+            ax.axhline(1, c='0.8')
+            ax.axvline(0.5, c='0.5')
+            ax.axhline(0.5, c='0.5')
+            
+            canvas.draw()
+
+
         draw(self.canvas_h, self.fig_h, self.ax_h, horiz, 'h profile', hlevels, hlevels_pos)
         draw(self.canvas_v, self.fig_v, self.ax_v, vert, 'v profile', vlevels, vlevels_pos)
+
+        # Draw ellipses
+        self.hlevels_buf.appendleft(np.copy(hlevels))
+        self.vlevels_buf.appendleft(np.copy(vlevels))
+        draw_ellipse(self.canvas_ellx, self.fig_ellx, self.ax_ellx,
+                     self.hlevels_buf)
+        draw_ellipse(self.canvas_elly, self.fig_elly, self.ax_elly,
+                     self.vlevels_buf)
+
+        
+        #print(self.data['IRCamera.'][:4])
+
        
     # ----------------------------------------------------------------------
     # PIEZOS PANEL

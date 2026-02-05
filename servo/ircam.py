@@ -186,7 +186,8 @@ class DataObserver(NITLibrary.NITUserObserver):
                 if ilen > np.min(self.roi_shape): ilen = np.min(self.roi_shape)
                 iwid = int(profile_width)
 
-                hprofile, vprofile, roi = utils.compute_profiles(frame.data().T, ix, iy, iwid, ilen,
+                hprofile, vprofile, roi = utils.compute_profiles(frame.data().T, ix, iy,
+                                                                 iwid, ilen,
                                                                  get_roi=get_roi)
 
                 # nan padded versions
@@ -209,10 +210,10 @@ class DataObserver(NITLibrary.NITUserObserver):
                     self.data['IRCamera.roi'][:profile_len**2] = roi.flatten()
 
                 # normalized profiles
-                hnorm_min = self.data['IRCamera.hnorm_min'][:profile_len]
-                hnorm_max = self.data['IRCamera.hnorm_max'][:profile_len]
-                vnorm_min = self.data['IRCamera.vnorm_min'][:profile_len]
-                vnorm_max = self.data['IRCamera.vnorm_max'][:profile_len]
+                hnorm_min = self.data['Servo.hnorm_min'][:profile_len]
+                hnorm_max = self.data['Servo.hnorm_max'][:profile_len]
+                vnorm_min = self.data['Servo.vnorm_min'][:profile_len]
+                vnorm_max = self.data['Servo.vnorm_max'][:profile_len]
                 hprofile_normalized = utils.normalize_profile(
                     hprofile_np, hnorm_min, hnorm_max)
                 vprofile_normalized = utils.normalize_profile(
@@ -222,24 +223,52 @@ class DataObserver(NITLibrary.NITUserObserver):
                 
                 # compute levels
                 
-                x_pixels_states = self.data['IRCamera.pixels_x']
-                y_pixels_states = self.data['IRCamera.pixels_y']
-                if self.x_pixels_states is None or not np.array_equal(self.x_pixels_states, x_pixels_states):
+                x_pixels_states = self.data['Servo.pixels_x']
+                y_pixels_states = self.data['Servo.pixels_y']
+                if self.x_pixels_states is None or not np.array_equal(
+                        self.x_pixels_states, x_pixels_states):
                     self.x_pixels_states = np.copy(x_pixels_states)
                     self.xpixels_list = utils.get_pixels_lists(x_pixels_states)
                     self.xpixels_list_pos = utils.get_mean_pixels_positions(self.xpixels_list)
                     self.data['IRCamera.hprofile_levels_pos'][:3] = self.xpixels_list_pos
                     
-                if self.y_pixels_states is None or not np.array_equal(self.y_pixels_states, y_pixels_states):
+                if self.y_pixels_states is None or not np.array_equal(
+                        self.y_pixels_states, y_pixels_states):
                     self.y_pixels_states = np.copy(y_pixels_states)
                     self.ypixels_list = utils.get_pixels_lists(y_pixels_states)
                     self.ypixels_list_pos = utils.get_mean_pixels_positions(self.ypixels_list)
                     self.data['IRCamera.vprofile_levels_pos'][:3] = self.ypixels_list_pos
                     
-                self.data['IRCamera.hprofile_levels'][:3] = utils.compute_profile_levels(
+                hlevels = utils.compute_profile_levels(
                     hprofile_normalized, self.xpixels_list)
-                self.data['IRCamera.vprofile_levels'][:3] = utils.compute_profile_levels(
+                vlevels = utils.compute_profile_levels(
                     vprofile_normalized, self.ypixels_list)
+
+                self.data['IRCamera.hprofile_levels'][:3] = hlevels
+                self.data['IRCamera.vprofile_levels'][:3] = vlevels
+                
+                # compute angles and opd
+                last_angles = self.data['IRCamera.last_angles'][:4]
+                opds = np.empty_like(last_angles)
+                
+                hellipse_norm_coeffs = self.data['Servo.hellipse_norm_coeffs'][:4]
+                vellipse_norm_coeffs = self.data['Servo.vellipse_norm_coeffs'][:4]
+                
+                hangles = utils.compute_angles(hlevels, hellipse_norm_coeffs)
+                hangles = utils.unwrap_angles(hangles, last_angles[:2])
+                hopds = utils.compute_opds(hangles)
+                
+                vangles = utils.compute_angles(vlevels, vellipse_norm_coeffs)
+                vangles = utils.unwrap_angles(vangles, last_angles[2:])
+                vopds = utils.compute_opds(vangles)
+
+                opds[:2] = hopds
+                opds[2:] = vopds
+                self.data['IRCamera.opds'][:4] = opds.astype(config.FRAME_DTYPE)
+                
+                last_angles[:2] = hangles
+                last_angles[2:] = vangles
+                self.data['IRCamera.last_angles'][:4] = last_angles.astype(config.FRAME_DTYPE)
                 
                 
                 

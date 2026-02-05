@@ -77,23 +77,39 @@ class SharedData(object):
         self.add_value('IRCamera.profile_len', int(config.DEFAULT_PROFILE_LEN), stored=True)
         self.add_value('IRCamera.profile_width', int(config.DEFAULT_PROFILE_WIDTH), stored=True)
         self.add_array('IRCamera.roi', np.zeros(config.FULL_FRAME_SIZE, dtype=config.FRAME_DTYPE))
-        self.add_array('IRCamera.roinorm_min', np.zeros(config.FULL_FRAME_SIZE, dtype=config.FRAME_DTYPE))
-        self.add_array('IRCamera.roinorm_max', np.ones(config.FULL_FRAME_SIZE, dtype=config.FRAME_DTYPE))
 
-        self.add_array('IRCamera.hnorm_min', np.zeros(config.FULL_FRAME_SHAPE[0],
-                                                      dtype=config.FRAME_DTYPE), stored=True)
-        self.add_array('IRCamera.hnorm_max', np.ones(config.FULL_FRAME_SHAPE[0],
-                                                     dtype=config.FRAME_DTYPE), stored=True) 
-        self.add_array('IRCamera.vnorm_min', np.zeros(config.FULL_FRAME_SHAPE[1],
-                                                      dtype=config.FRAME_DTYPE), stored=True)
-        self.add_array('IRCamera.vnorm_max', np.ones(config.FULL_FRAME_SHAPE[1],
-                                                     dtype=config.FRAME_DTYPE), stored=True)
+        self.add_array('IRCamera.angles', np.zeros(4, dtype=config.FRAME_DTYPE), stored=True)
+        self.add_array('IRCamera.last_angles', np.zeros(4, dtype=config.FRAME_DTYPE), stored=True)
+        self.add_array('IRCamera.opds', np.zeros(4, dtype=config.FRAME_DTYPE), stored=True)
+        
 
         # selected pixels: 0:none, 1:side, 2:center
-        self.add_array('IRCamera.pixels_x', np.zeros(config.FULL_FRAME_SHAPE[0],
-                                                     dtype=int), stored=True)
-        self.add_array('IRCamera.pixels_y', np.zeros(config.FULL_FRAME_SHAPE[1],
-                                                     dtype=int), stored=True)
+        self.add_array('Servo.pixels_x', np.zeros(config.FULL_FRAME_SHAPE[0],
+                                                  dtype=int), stored=True)
+        self.add_array('Servo.pixels_y', np.zeros(config.FULL_FRAME_SHAPE[1],
+                                                  dtype=int), stored=True)
+        
+        
+        self.add_array('Servo.roinorm_min', np.zeros(config.FULL_FRAME_SIZE,
+                                                     dtype=config.FRAME_DTYPE), stored=True)
+        self.add_array('Servo.roinorm_max', np.ones(config.FULL_FRAME_SIZE,
+                                                    dtype=config.FRAME_DTYPE), stored=True)
+
+        self.add_array('Servo.hnorm_min', np.zeros(config.FULL_FRAME_SHAPE[0],
+                                                      dtype=config.FRAME_DTYPE), stored=True)
+        self.add_array('Servo.hnorm_max', np.ones(config.FULL_FRAME_SHAPE[0],
+                                                     dtype=config.FRAME_DTYPE), stored=True) 
+        self.add_array('Servo.vnorm_min', np.zeros(config.FULL_FRAME_SHAPE[1],
+                                                      dtype=config.FRAME_DTYPE), stored=True)
+        self.add_array('Servo.vnorm_max', np.ones(config.FULL_FRAME_SHAPE[1],
+                                                     dtype=config.FRAME_DTYPE), stored=True)
+        self.add_array('Servo.hellipse_norm_coeffs',
+                       np.ones(4, dtype=config.FRAME_DTYPE), stored=True)
+        self.add_array('Servo.vellipse_norm_coeffs',
+                       np.ones(4, dtype=config.FRAME_DTYPE), stored=True)
+
+        
+
         
         self.add_array('DAQ.piezos_level',
                        np.zeros(3, dtype=config.DAQ_PIEZO_LEVELS_DTYPE),
