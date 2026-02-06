@@ -12,6 +12,8 @@ from . import logger
 from . import piezo
 from . import config
 from . import utils
+from . import pid
+
 from .fsm import StateMachine, FsmEvent, FsmState, Transition
 
 
@@ -65,10 +67,19 @@ class Servo(StateMachine):
         self.nocam = nocam
         
         table = {
-            (FsmState.IDLE,    FsmEvent.START): Transition(FsmState.RUNNING, action=self._start),
-            (FsmState.RUNNING, FsmEvent.NORMALIZE): Transition(FsmState.RUNNING, action=self._normalize),
+            (FsmState.IDLE,    FsmEvent.START): Transition(
+                FsmState.RUNNING, action=self._start),
+            (FsmState.RUNNING, FsmEvent.NORMALIZE): Transition(
+                FsmState.RUNNING, action=self._normalize),
             (FsmState.RUNNING, FsmEvent.ERROR): Transition(FsmState.FAILED),
-            (FsmState.RUNNING, FsmEvent.STOP):  Transition(FsmState.STOPPED, action=self._stop),
+            (FsmState.RUNNING, FsmEvent.STOP): Transition(
+                FsmState.STOPPED, action=self._stop),
+            (FsmState.RUNNING, FsmEvent.MOVE_TO_OPD): Transition(
+                FsmState.RUNNING, action=self._move_to_opd),
+            (FsmState.RUNNING, FsmEvent.CLOSE_LOOP): Transition(
+                FsmState.STAY_AT_OPD, action=self._close_loop),         
+            (FsmState.STAY_AT_OPD, FsmEvent.OPEN_LOOP): Transition(
+                FsmState.RUNNING, action=self._open_loop),          
             (FsmState.FAILED,  FsmEvent.RESET): Transition(FsmState.IDLE),
             (FsmState.STOPPED, FsmEvent.RESET): Transition(FsmState.IDLE),
         }
@@ -100,6 +111,7 @@ class Servo(StateMachine):
         while True:
             try:
                 self.poll()
+                
                 if self.state is FsmState.STOPPED:
                     break
                 time.sleep(0.1)
@@ -112,6 +124,59 @@ class Servo(StateMachine):
     def on_exit_running(self, _):
         log.info("<< RUNNING")
 
+    def on_enter_stay_at_opd(self, _):
+        log.info(">> STAY_AT_OPD")
+        
+        opd_target = self.data['Servo.opd_target'][0]
+        
+        log.info(f"   OPD target: {opd_target} nm")
+        
+        dt = config.OPD_LOOP_TIME  # 1 kHz loop (adjust to your hardware timing)
+
+        while True:
+            try:
+                pid_coeffs = self.data['Servo.PID'][:3]
+
+                pid_control = pid.PID(
+                    pid.PIDConfig(
+                        kp=pid_coeffs[0],
+                        ki=pid_coeffs[1],
+                        kd=pid_coeffs[2],
+                        dt=dt,
+                        out_min=config.PIEZO_V_MIN,
+                        out_max=config.PIEZO_V_MAX,
+                        deriv_filter_hz=1/dt/1000., kaw=5.0, deadband=0.0
+                    ))
+
+                opd = np.mean(self.data['IRCamera.mean_opd_buffer'][:10])
+                if not np.isnan(opd):
+
+                    self.data['DAQ.piezos_level'][0] = pid_control.update(
+                        control=self.data['DAQ.piezos_level'][0],
+                        setpoint=opd_target,
+                        measurement=opd)
+                else:
+                    self.events['open_loop'].set()
+                    break
+
+                self.poll()
+
+                if self.events['stop'].is_set():
+                      break
+
+                if self.events['open_loop'].is_set():
+                      break
+
+                time.sleep(config.OPD_LOOP_TIME)
+                
+            except KeyboardInterrupt:
+                log.error('Keyboard interrupt')
+                self.events('stop').set()
+                break
+
+    def on_exit_stay_at_opd(self, _):
+        log.info("<< STAY_AT_OPD")
+        
     # Actions
     def _start(self, _):
 
@@ -224,8 +289,57 @@ class Servo(StateMachine):
         np.save('vprofiles.npy', np.array(rec_vprofiles))
         np.save('rois.npy', np.array(rec_rois))
 
+    def _move_to_opd(self, _):
+        log.info("Moving to OPD")
+
+        opd_target = self.data['Servo.opd_target'][0]
+        
+        log.info(f"   OPD target: {opd_target} nm")
+        
+        dt = config.OPD_LOOP_TIME  # 1 kHz loop (adjust to your hardware timing)
+
+        while True:
+
+            pid_coeffs = self.data['Servo.PID'][:3]
             
+            pid_control = pid.PID(
+                pid.PIDConfig(
+                    kp=pid_coeffs[0],
+                    ki=pid_coeffs[1],
+                    kd=pid_coeffs[2],
+                    dt=dt,
+                    out_min=config.PIEZO_V_MIN,
+                    out_max=config.PIEZO_V_MAX,
+                    deriv_filter_hz=1/dt/1000., kaw=5.0, deadband=0.0
+                ))
+
             
+            opd = np.mean(self.data['IRCamera.mean_opd_buffer'][:10])
+            if not np.isnan(opd):
+            
+                self.data['DAQ.piezos_level'][0] = pid_control.update(
+                    control=self.data['DAQ.piezos_level'][0],
+                    setpoint=opd_target,
+                    measurement=opd)
+                
+            if np.abs(opd - opd_target) < config.OPD_TOLERANCE:
+                log.info(f"OPD target reached: {opd} nm")
+                break
+
+            if self.events['stop'].is_set():
+                  break
+                                  
+            time.sleep(config.OPD_LOOP_TIME)
+
+
+        log.info(f"OPD piezo at {opd}")
+
+    def _close_loop(self, _):
+        log.info("Closing loop on target OPD")
+
+    def _open_loop(self, _):
+        log.info("Opening loop")
+        
     def _stop(self, _):
         log.info("Stopping Servo")
 

@@ -1,4 +1,5 @@
 import numpy as np
+import time
 import tkinter as tk
 from tkinter import ttk
 from PIL import Image, ImageTk
@@ -195,10 +196,6 @@ class CaseBar(tk.Frame):
 class Viewer(core.Worker):
     """
     Tkinter-based scientific viewer with:
-    - Zoom/pan
-    - Adjustable LUTs
-    - Export to PNG
-    - Piezos panel (OPD / DA-1 / DA-2)
     """
 
     # ------------------------------------------------------------------
@@ -209,7 +206,7 @@ class Viewer(core.Worker):
 
         self.root = tk.Tk()
         self.root.title("IRCamera Viewer")
-        self.root.geometry("1280x800")
+        self.root.geometry("1280x900")
         self.root.minsize(900, 600)
 
         # Restore old window geometry
@@ -223,6 +220,77 @@ class Viewer(core.Worker):
         style.configure(".", font=("Noto Sans", 14))
         style.theme_use("clam")
 
+        # --- TABS (Notebook) ------------------------------------------
+        self.notebook = ttk.Notebook(self.root)
+        self.notebook.pack(fill=tk.BOTH, expand=True)
+        
+        # Main tab (contains current UI)
+        self.tab_main = ttk.Frame(self.notebook)
+        self.notebook.add(self.tab_main, text="Main")
+        
+        # Config tab (for settings)
+        self.tab_config = ttk.Frame(self.notebook)
+        self.notebook.add(self.tab_config, text="Config")
+
+        # --- Buffers tab ---------------------------------------------------------
+        self.tab_buffers = ttk.Frame(self.notebook)
+        self.notebook.add(self.tab_buffers, text="Buffers")
+        
+        # Construction de l'onglet (figures + canvases + lignes)
+        self._build_buffers_tab()
+
+        # ====================== Config tab content =============================== 
+        cfg_wrap = ttk.Frame(self.tab_config)
+        cfg_wrap.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+        pid_frame = ttk.LabelFrame(cfg_wrap, text="PID", padding=10)               
+        pid_frame.pack(side="top", anchor="nw", fill="x")
+
+        # PID variables (defaults or read from self.data if available)
+        def _read_float(key, default=0.0):
+            try:
+                val = self.data[key][0]
+                return float(val)
+            except Exception:
+                return float(default)
+
+        self.pid_p = tk.DoubleVar(value=_read_float('Servo.pid_P', self.data['Servo.PID'][0]))
+        self.pid_i = tk.DoubleVar(value=_read_float('Servo.pid_I', self.data['Servo.PID'][1]))
+        self.pid_d = tk.DoubleVar(value=_read_float('Servo.pid_D', self.data['Servo.PID'][2]))
+
+        # Layout: labels + entries in a row (grid is clean here)
+        for col, (label, var, key) in enumerate((
+            ("P", self.pid_p, 'Servo.pid_P'),
+            ("I", self.pid_i, 'Servo.pid_I'),
+            ("D", self.pid_d, 'Servo.pid_D'),
+        )):
+            ttk.Label(pid_frame, text=label).grid(row=0, column=col, sticky="w", padx=(0, 8), pady=(0, 4))
+            e = ttk.Entry(pid_frame, textvariable=var, width=10)
+            e.grid(row=1, column=col, sticky="w", padx=(0, 16), pady=(0, 6))
+
+            # On Return: push to shared data
+            def _mk_bind(entry, v, k):
+                def _on_return(_evt=None):
+                    try:
+                        val = float(v.get())
+                        # Store both as float and in shared array-like if present
+                        # Preferred: 1-value buffer at index 0 (consistent with your data usage)
+                        if k in self.data:
+                            self.data[k][0] = float(val)
+                        else:
+                            # If key absent, create a minimal 1-slot list-like on the fly
+                            self.data[k] = [float(val)]
+                        log.info(f"{k} updated: {val}")
+                    except Exception as ex:
+                        log.error(f"Error updating {k}: {ex}")
+                entry.bind("<Return>", _on_return)
+
+            _mk_bind(e, var, key)
+
+        ttk.Button(pid_frame, text="Apply", command=self._apply_pid).grid(
+            row=1, column=3, sticky="w", padx=(0, 0)
+        )
+        
         # ------------------------------------------------------------------
         # Image info
         # ------------------------------------------------------------------
@@ -243,12 +311,15 @@ class Viewer(core.Worker):
         self.current_lut_name = "magma"
         self.lut = self.build_lut_magma()
 
+        # ==================================================================
+        # Main layout: LEFT = image + profiles, RIGHT = controls
+        # ==================================================================
 
         # ==================================================================
         # Main layout: LEFT = image + profiles, RIGHT = controls
         # ==================================================================
 
-        main_frame = ttk.Frame(self.root)
+        main_frame = ttk.Frame(self.tab_main)       
         main_frame.pack(fill=tk.BOTH, expand=True)
 
         # LEFT SIDE ---------------------------------------------------------
@@ -289,19 +360,35 @@ class Viewer(core.Worker):
         profile_len_frame = ttk.LabelFrame(self._right_col, text="Profile size", padding=10)
         profile_len_frame.pack(fill=tk.X, expand=False, pady=15)
 
+        top_row = ttk.Frame(profile_len_frame)
+        top_row.pack(side="top", anchor="nw", fill="x", pady=(0, 6))
+
+        length_col = ttk.Frame(top_row)
+        length_col.pack(side="left", anchor="nw", padx=(0, 10))
+
         self.profile_len = tk.IntVar(value=self.data['IRCamera.profile_len'][0])
-        #self.profile_len.trace_add("write", self.on_len_changed)
-        ttk.Label(profile_len_frame, text="length").pack(anchor="w")
-        e = tk.Entry(profile_len_frame, textvariable=self.profile_len, width=8)
-        e.pack(anchor="w", pady=4)
+        ttk.Label(length_col, text="length").pack(side='top', anchor="w")
+        e = tk.Entry(length_col, textvariable=self.profile_len, width=8)
+        e.pack(side='top', anchor="w", pady=4)
         e.bind("<Return>", self.on_len_changed)
 
+        width_col = ttk.Frame(top_row)
+        width_col.pack(side="left", anchor="nw", padx=(0, 10))
+        
         self.profile_width = tk.IntVar(value=self.data['IRCamera.profile_width'][0])
-        #self.profile_width.trace_add("write", self.on_width_changed)
-        ttk.Label(profile_len_frame, text="width").pack(anchor="w")
-        e = tk.Entry(profile_len_frame, textvariable=self.profile_width, width=8)
+        ttk.Label(width_col, text="width").pack(side='top', anchor='w')
+        e = tk.Entry(width_col, textvariable=self.profile_width, width=8)
         e.pack(anchor="w", pady=4)
         e.bind("<Return>", self.on_width_changed)
+
+        bottom_row = ttk.Frame(profile_len_frame)
+        bottom_row.pack(side="top", anchor="nw", fill="x")
+
+        self.opd_target = tk.DoubleVar(value=self.data['Servo.opd_target'][0])
+        ttk.Label(bottom_row, text="OPD target").pack(side="left", anchor="w", padx=(0, 6))
+        e = tk.Entry(bottom_row, textvariable=self.opd_target, width=8)
+        e.pack(side="left", anchor="w", pady=4)
+        e.bind("<Return>", self.on_opd_target_changed)
 
         #canvas_frame = ttk.Frame(left_col)
         #canvas_frame.pack(fill=tk.BOTH, expand=True)
@@ -382,8 +469,8 @@ class Viewer(core.Worker):
         self.canvas_elly.get_tk_widget().pack(fill=tk.BOTH, expand=True)
 
         
-        self.hlevels_buf = deque(maxlen=30)
-        self.vlevels_buf = deque(maxlen=30)
+        self.hlevels_buf = deque(maxlen=config.VIEWER_BUFFER_SIZE)
+        self.vlevels_buf = deque(maxlen=config.VIEWER_BUFFER_SIZE)
         
         # Tk image holder
         self.root.after_idle(lambda: self.on_resize(None))
@@ -406,12 +493,11 @@ class Viewer(core.Worker):
 
         self.points = []
 
-        # ------------------------------------------------------------------
-        # Toolbar
-        # ------------------------------------------------------------------
-        toolbar = ttk.Frame(self.root)
-        toolbar.pack(fill=tk.X, pady=3)
 
+        # --- Toolbar --------------------------------------------------------------
+        toolbar = ttk.Frame(self.tab_main)         
+        toolbar.pack(fill=tk.X, pady=3)
+        
         ttk.Label(toolbar, text="LUT:").pack(side=tk.LEFT, padx=5)
         self.lut_var = tk.StringVar(value="magma")
         lut_choices = ["gray", "viridis", "inferno", "magma",
@@ -434,22 +520,28 @@ class Viewer(core.Worker):
         #                                 command=self.clear_roi)
         # self.clear_roi_btn.pack(side=tk.LEFT, padx=10)
 
-        self.export_btn = ttk.Button(toolbar, text="Export PNG",
-                                     command=self.export_png)
-        self.export_btn.pack(side=tk.LEFT, padx=10)
-
         self.stop_btn = ttk.Button(toolbar, text="STOP",
                                    command=self.stop_servo)
         self.stop_btn.pack(side=tk.RIGHT, padx=10)
 
+        self.close_loop_btn = ttk.Button(toolbar, text="CLOSE LOOP",
+                                         command=self.toggle_close_loop)
+        self.close_loop_btn.pack(side=tk.RIGHT, padx=10)
+        self._close_loop = False
+
         self.normalize_btn = ttk.Button(toolbar, text="NORMALIZE",
                                         command=self.normalize)
-        self.normalize_btn.pack(side=tk.RIGHT, padx=10)        
+        self.normalize_btn.pack(side=tk.RIGHT, padx=10)
+
+        self.move_to_opd_btn = ttk.Button(toolbar, text="MOVE to OPD",
+                                          command=self.move_to_opd)
+        self.move_to_opd_btn.pack(side=tk.RIGHT, padx=10)
+
 
         # ------------------------------------------------------------------
         # Info panel
         # ------------------------------------------------------------------
-        info = ttk.Frame(self.root, height=30)
+        info = ttk.Frame(self.tab_main, height=30)  
         info.pack(fill=tk.X, pady=3)
         info.pack_propagate(False)
 
@@ -866,6 +958,11 @@ class Viewer(core.Worker):
                 
         self.data['IRCamera.profile_width'][0] = int(self.profile_width.get())
 
+    def on_opd_target_changed(self, *args):
+        opd_target = self.opd_target.get()
+        log.info(f"OPD target updated: {opd_target}")
+        self.data['Servo.opd_target'][0] = float(self.opd_target.get())
+
     def _on_hbar_change(self, index, state, all_states):
         try:
             profile_len = self.data['IRCamera.profile_len'][0]
@@ -880,95 +977,18 @@ class Viewer(core.Worker):
             self.data["Servo.pixels_y"][:profile_len] = [int(s) for s in all_states]
         except Exception as e:
             log.error(f"Error updating pixels_y: {e}")
-    
-    # ----------------------------------------------------------------------
-    # ROI TOOL
-    # ----------------------------------------------------------------------
-    # def roi_start_event(self, event):
-    #     ix, iy = self.canvas_to_image(event.x, event.y)
-    #     if not (0 <= ix < self.img_w and 0 <= iy < self.img_h):
-    #         return
-    #     self.roi_active = True
-    #     self.roi_start_canvas = (event.x, event.y)
-    #     if self.roi_rect_id:
-    #         self.canvas.delete(self.roi_rect_id)
-    #     self.roi_rect_id = None
-    #     self.roi_bounds_img = None
-    #     self.roi_stats_var.set("ROI: drawing…")
 
-    # def roi_drag_event(self, event):
-    #     if not self.roi_active:
-    #         return
-    #     x0, y0 = self.roi_start_canvas
-    #     x1, y1 = event.x, event.y
-    #     if self.roi_rect_id:
-    #         self.canvas.coords(self.roi_rect_id, x0, y0, x1, y1)
-    #     else:
-    #         self.roi_rect_id = self.canvas.create_rectangle(
-    #             x0, y0, x1, y1, outline="#5FA8FF", width=2)
+    def _apply_pid(self):
+        try:
+            self.data['Servo.PID'][:3] = np.array(
+                [self.pid_p.get(),
+                 self.pid_i.get(),
+                 self.pid_d.get()]).astype(config.DATA_DTYPE)
+        except Exception as ex:
+            log.error(f"Error applying PID params: {ex}")
+        log.info("PID parameters applied")
 
-    # def roi_end_event(self, event):
-    #     if not self.roi_active:
-    #         return
-    #     self.roi_active = False
-    #     if not self.roi_rect_id:
-    #         self.roi_stats_var.set("ROI: none")
-    #         return
 
-    #     cx0, cy0 = self.roi_start_canvas
-    #     cx1, cy1 = event.x, event.y
-    #     ix0, iy0 = self.canvas_to_image(cx0, cy0)
-    #     ix1, iy1 = self.canvas_to_image(cx1, cy1)
-
-    #     x0, x1 = sorted((max(0, ix0), min(self.img_w-1, ix1)))
-    #     y0, y1 = sorted((max(0, iy0), min(self.img_h-1, iy1)))
-
-    #     if x1 <= x0 or y1 <= y0:
-    #         self.clear_roi()
-    #         return
-
-    #     self.roi_bounds_img = (x0, y0, x1, y1)
-    #     self.render()
-
-    #     roi = self.frame[y0:y1, x0:x1]
-    #     count = roi.size
-    #     vmin = float(np.min(roi))
-    #     vmax = float(np.max(roi))
-    #     vmean = float(np.mean(roi))
-    #     vstd = float(np.std(roi))
-
-    #     self.roi_stats_var.set(
-    #         f"ROI: {x1-x0}×{y1-y0} "
-    #         f"min={vmin:.3f} max={vmax:.3f} "
-    #         f"mean={vmean:.3f} std={vstd:.3f} n={count}"
-    #     )
-    #     self.update_histogram()
-
-    # def clear_roi(self):
-    #     if self.roi_rect_id:
-    #         self.canvas.delete(self.roi_rect_id)
-    #     self.roi_rect_id = None
-    #     self.roi_bounds_img = None
-    #     self.roi_stats_var.set("ROI: none")
-    #     self.update_histogram()
-
-    # # ----------------------------------------------------------------------
-    # # CSV LOGGING
-    # # ----------------------------------------------------------------------
-    # def ensure_csv_header(self):
-    #     try:
-    #         with open(self.csv_file, "x", newline="", encoding="utf-8") as f:
-    #             csv.writer(f).writerow(["x", "y", "value"])
-    #     except FileExistsError:
-    #         pass
-
-    # def save_click(self, x, y, val):
-    #     with open(self.csv_file, "a", newline="", encoding="utf-8") as f:
-    #         csv.writer(f).writerow([x, y, val])
-
-    # ----------------------------------------------------------------------
-    # HISTOGRAM WINDOW
-    # ----------------------------------------------------------------------
     def toggle_normalized(self):
         if self._show_normalized:
             self._show_normalized = False
@@ -977,63 +997,22 @@ class Viewer(core.Worker):
             self._show_normalized = True
             self.shownorm_btn.config(text="Show Un-normalized")
 
-    # def open_histogram(self):
-    #     self.hist_window = tk.Toplevel(self.root)
-    #     self.hist_window.title("Histogram")
-
-    #     self.hist_fig = plt.Figure(figsize=(4.5, 3.2), dpi=100)
-    #     self.hist_ax = self.hist_fig.add_subplot(111)
-    #     self.hist_canvas = FigureCanvasTkAgg(self.hist_fig, master=self.hist_window)
-    #     self.hist_canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
-
-    #     self.update_histogram()
-
-    # def close_histogram(self):
-    #     if self.hist_window:
-    #         self.hist_window.destroy()
-    #     self.hist_window = None
-
-    # def update_histogram(self):
-    #     if not self.hist_window:
-    #         return
-    #     self.hist_ax.clear()
-
-    #     data = self.frame.flatten()
-    #     self.hist_ax.hist(data, bins=100, color="white",
-    #                       alpha=0.9, label="Image", density=True)
-
-    #     if self.roi_bounds_img:
-    #         x0, y0, x1, y1 = self.roi_bounds_img
-    #         roi = self.frame[y0:y1, x0:x1].flatten()
-    #         if roi.size > 0:
-    #             self.hist_ax.hist(roi, bins=100, color="#5FA8FF",
-    #                               alpha=0.6, label="ROI", density=True)
-
-    #     self.hist_ax.set_title("Histogram")
-    #     self.hist_ax.set_xlabel("Pixel Value")
-    #     self.hist_ax.set_ylabel("Count")
-    #     self.hist_ax.grid(alpha=0.3)
-    #     self.hist_ax.legend(loc="upper right")
-    #     self.hist_canvas.draw()
-
+    def toggle_close_loop(self):
+        if self._close_loop:
+            self._close_loop = False
+            self.close_loop_btn.config(text="CLOSE LOOP")
+            self._set_event('open_loop')
+        else:
+            self._close_loop = True
+            self.close_loop_btn.config(text="OPEN LOOP")
+            self._set_event('close_loop')
+            
     # ----------------------------------------------------------------------
-    # EXPORT PNG
+    # MOVE TO OPD
     # ----------------------------------------------------------------------
-    def export_png(self):
-        self.canvas.update()
-        w = self.canvas.winfo_width()
-        h = self.canvas.winfo_height()
-
-        ps = self.canvas.postscript(colormode='color')
-        from PIL import Image
-        import io
-        img = Image.open(io.BytesIO(ps.encode('utf-8')))
-        img = img.crop((0, 0, w, h))
-
-        filename = "export_view.png"
-        img.save(filename)
-        print(f"Exported view to {filename}")
-
+    def move_to_opd(self):
+        self._set_event('move_to_opd')
+        
     # ----------------------------------------------------------------------
     # WINDOW GEOMETRY SAVE/RESTORE
     # ----------------------------------------------------------------------
@@ -1120,8 +1099,18 @@ class Viewer(core.Worker):
             pass
 
     def update_status(self):
-        mean_opd = np.mean(self.data['IRCamera.opds'][:4])
-        self.status_var.set(f"Mean OPD: {mean_opd:.3f} nm")
+        mean_opd = self.data['IRCamera.mean_opd'][0]
+        std_opd = self.opd_std_buf[0] if self.opd_std_buf else np.nan
+        
+        fps = 1./self.data['IRCamera.median_sampling_time'][0]
+        drops = self.data['IRCamera.lost_frames'][0]
+        
+        status_str_list = (f"mean OPD: {mean_opd:.0f} nm",
+                           f" (std): {std_opd:.1f} nm",
+                           f"fps: {fps/1e3:.3f} kHz",
+                           f"frame drops: {drops}")
+        
+        self.status_var.set('\n'.join(status_str_list))
         
     # ----------------------------------------------------------------------
     # PERIODIC REFRESH (MAIN IMAGE UPDATE LOOP)
@@ -1178,6 +1167,11 @@ class Viewer(core.Worker):
                     except Exception as e:
                         print(e)
 
+        try:
+            self._update_buffers_tab()
+        except Exception as e:
+            log.error(f"buffers update error: {e}")
+
         if not (self.stop_event and self.stop_event.is_set()):
             self.root.after(100, self.refresh)
 
@@ -1187,6 +1181,8 @@ class Viewer(core.Worker):
             self.var_opd.set(float(levels[0]))
             self.var_da1.set(float(levels[1]))
             self.var_da2.set(float(levels[2]))
+
+            
 
 
     # -----------------------------------------------
@@ -1305,10 +1301,223 @@ class Viewer(core.Worker):
         draw_ellipse(self.canvas_elly, self.fig_elly, self.ax_elly,
                      self.vlevels_buf)
 
+
+        # feed buffers
+        self.time_buf.appendleft(time.time())
+        all_opd = self.data['IRCamera.mean_opd_buffer'][:config.BUFFER_SIZE]
+        self.opd_mean_buf.append(np.nanmean(all_opd))
+        self.opd_std_buf.append(np.nanstd(all_opd))
+        self.piezo_opd_buf.append(
+            self.data['DAQ.piezos_level_actual'][0])
+        self.piezo_da1_buf.append(
+            self.data['DAQ.piezos_level_actual'][1])
+        self.piezo_da2_buf.append(
+            self.data['DAQ.piezos_level_actual'][2])
+
+        self.index_longbuf += 1
+        if self.index_longbuf > config.VIEWER_BUFFER_SIZE:
+            self.time_longbuf.append(np.mean(self.time_buf))
+            self.opd_std_longbuf.append(
+                np.mean(self.opd_std_buf))
+                
+            self.index_longbuf = 0
         
         #print(self.data['IRCamera.'][:4])
 
-       
+
+    def _build_buffers_tab(self):
+        """
+        Crée l'onglet 'Buffers' avec 3 graphes:
+          - mean_opd (ligne simple)
+          - std_opd  (ligne simple)
+          - piezos   (3 lignes: OPD, DA-1, DA-2)
+        Les lignes sont conservées pour un update ultra-rapide.
+        """
+        self.time_buf = deque(maxlen=config.VIEWER_BUFFER_SIZE)
+        self.opd_mean_buf = deque(maxlen=config.VIEWER_BUFFER_SIZE)
+        self.opd_std_buf = deque(maxlen=config.VIEWER_BUFFER_SIZE)
+        self.piezo_opd_buf = deque(maxlen=config.VIEWER_BUFFER_SIZE)
+        self.piezo_da1_buf = deque(maxlen=config.VIEWER_BUFFER_SIZE)
+        self.piezo_da2_buf = deque(maxlen=config.VIEWER_BUFFER_SIZE)
+        
+        self.index_longbuf = 0
+        self.time_longbuf = deque() # for all the observing time
+        self.opd_mean_longbuf = deque()
+        self.opd_std_longbuf = deque()
+        self.piezo_opd_longbuf = deque()
+        self.piezo_da1_longbuf = deque()
+        self.piezo_da2_longbuf = deque()
+        
+        
+        # ---- Layout du tab: 3 LabelFrame empilés verticalement --------------
+        wrap = ttk.Frame(self.tab_buffers)
+        wrap.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
+        # On utilise pack ici (on ne mélange pas avec grid dans la même frame)
+
+        # ========== mean_opd ==================================================
+        lf_mean = ttk.LabelFrame(wrap, text="mean OPD", padding=6)
+        lf_mean.pack(fill=tk.BOTH, expand=True, pady=(0, 8))
+
+        self.fig_mean = plt.Figure(figsize=(5, 1.8), dpi=100)
+        self.ax_mean = self.fig_mean.add_subplot(111)
+        self.ax_mean.set_title("mean OPD")
+        self.ax_mean.set_ylabel("nm")
+        self.ax_mean.grid(alpha=0.3)
+        self.ax_mean.set_xticks([])
+        for spine in self.ax_mean.spines.values():
+            spine.set_visible(False)
+
+        # Remove all padding around the figure
+        self.ax_mean.set_position([0.03, 0.03, 0.97, 0.97])
+        #self.fig_mean.subplots_adjust(left=0, right=1, top=1, bottom=0)
+
+
+        self.canvas_mean = FigureCanvasTkAgg(self.fig_mean, master=lf_mean)
+        self.canvas_mean.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+
+        # Line2D initiale (x vide, y vide)
+        (self.line_mean,) = self.ax_mean.plot([], [], color="tab:blue", lw=1.5, label="mean_opd")
+        self.ax_mean.legend(loc="upper right")
+        self.ax_mean.set_xlim(0, config.VIEWER_BUFFER_SIZE)
+
+        # ========== std_opd ===================================================
+        lf_std = ttk.LabelFrame(wrap, text="std OPD", padding=6)
+        lf_std.pack(fill=tk.BOTH, expand=True, pady=(0, 8))
+
+        self.fig_std = plt.Figure(figsize=(5, 1.8), dpi=100)
+        self.ax_std = self.fig_std.add_subplot(111)
+        self.ax_std.set_title("std OPD")
+        self.ax_std.set_ylabel("nm")
+        self.ax_std.grid(alpha=0.3)
+
+        self.canvas_std = FigureCanvasTkAgg(self.fig_std, master=lf_std)
+        self.canvas_std.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+
+        (self.line_std,) = self.ax_std.plot([], [], color="tab:orange", lw=1.5, label="std_opd")
+        (self.line_std_long,) = self.ax_std.plot([], [], color="tab:red", lw=1.5, label="std_opd (long)")
+        self.ax_std.legend(loc="upper right")
+        self.ax_std.set_xticks([])
+        for spine in self.ax_std.spines.values():
+            spine.set_visible(False)
+
+        # Remove all padding around the figure
+        self.ax_std.set_position([0.03, 0.03, 0.97, 0.97])
+        #self.fig_std.subplots_adjust(left=0, right=1, top=1, bottom=0)
+        self.ax_std.set_xlim(0, config.VIEWER_BUFFER_SIZE)
+
+        # ========== piezos ====================================================
+        lf_pz = ttk.LabelFrame(wrap, text="Piezos", padding=6)
+        lf_pz.pack(fill=tk.BOTH, expand=True)
+
+        self.fig_pz = plt.Figure(figsize=(5, 1.8), dpi=100)
+        self.ax_pz = self.fig_pz.add_subplot(111)
+        self.ax_pz.set_title("Piezos levels")
+        self.ax_pz.set_ylabel("V")
+        self.ax_pz.grid(alpha=0.3)
+
+        self.canvas_pz = FigureCanvasTkAgg(self.fig_pz, master=lf_pz)
+        self.canvas_pz.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+
+        (self.line_pz_opd,) = self.ax_pz.plot([], [], color="tab:green",  lw=1.4, label="OPD")
+        (self.line_pz_da1,) = self.ax_pz.plot([], [], color="tab:red",    lw=1.2, label="DA-1")
+        (self.line_pz_da2,) = self.ax_pz.plot([], [], color="tab:purple", lw=1.2, label="DA-2")
+        self.ax_pz.legend(loc="upper right")
+
+        self.ax_pz.set_xticks([])
+        for spine in self.ax_pz.spines.values():
+            spine.set_visible(False)
+
+        # Remove all padding around the figure
+        self.ax_pz.set_position([0.03, 0.03, 0.97, 0.97])
+        self.ax_pz.set_xlim(0, config.VIEWER_BUFFER_SIZE)
+
+        #self.fig_pz.subplots_adjust(left=0, right=1, top=1, bottom=0)
+        
+        # petit état pour throttler (optionnel)
+        self._buffers_last_draw = 0
+
+
+    def _np_buffer(self, buf):
+        """
+        Convertit buf en np.array 1D en sécurité.
+        Retourne np.array([]) si clé absente ou vide.
+        """
+        try:
+            arr = np.array(buf, dtype=float).ravel()
+            # on retire les NaN si jamais
+            if arr.size == 0:
+                return np.array([], dtype=float)
+            return arr[np.isfinite(arr)]
+        except Exception:
+            return np.array([], dtype=float)
+
+
+    def _autoscale_1d(self, ax, x, y, pad_ratio=0.01):
+        """
+        """
+        if min(x) != max(x):
+            ax.set_xlim(min(x), max(x))
+            
+        if y is not None:
+            ymin, ymax = float(np.min(y)), float(np.max(y))
+            if ymin == ymax:
+                # évite plage nulle
+                eps = 1e-6 if ymin == 0 else abs(ymin) * 0.05
+                ymin -= eps
+                ymax += eps
+            pad = (ymax - ymin) * pad_ratio
+            ax.set_ylim(ymin - pad, ymax + pad)
+
+
+    def _update_buffers_tab(self):
+        """
+        Met à jour les 3 graphes de l'onglet 'Buffers'.
+        Appelée depuis refresh() pour rester synchrone au frame_update.
+        """
+        now = time.perf_counter()
+        if now - self._buffers_last_draw < 0.1: 
+            return
+
+        xtime = np.array(self.time_buf)
+        xtime_long = np.array(self.time_longbuf)
+        # --- mean_opd
+        y_mean = self._np_buffer(self.opd_mean_buf)
+        self.line_mean.set_data(xtime, y_mean)
+        self._autoscale_1d(self.ax_mean, xtime, y_mean)
+        self.canvas_mean.draw_idle()
+
+        # --- std_opd
+        y_std = self._np_buffer(self.opd_std_buf)
+        self.line_std.set_data(xtime, y_std)
+        
+        #y_std_long = self._np_buffer(self.opd_std_longbuf)
+        #x_std_long = np.arange(len(y_std_long), dtype=float)
+        
+        #self.line_std_long.set_data(xtime, y_std_long)
+        
+        self._autoscale_1d(self.ax_std, xtime, y_std)
+        self.canvas_std.draw_idle()
+
+        # --- piezos (3 courbes)
+        y_pz_opd = self._np_buffer(self.piezo_opd_buf)
+        y_pz_da1 = self._np_buffer(self.piezo_da1_buf)
+        y_pz_da2 = self._np_buffer(self.piezo_da2_buf)
+        n_pz = max(len(y_pz_opd), len(y_pz_da1), len(y_pz_da2))
+
+        self.line_pz_opd.set_data(xtime, y_pz_opd)
+        self.line_pz_da1.set_data(xtime, y_pz_da1)
+        self.line_pz_da2.set_data(xtime, y_pz_da2)
+
+        # autoscale en tenant compte des NaN et en incluant 0 V
+        self._autoscale_1d(self.ax_pz, xtime, None)
+        self.ax_pz.set_ylim(0, 10)
+        
+
+        self.canvas_pz.draw_idle()
+
+        self._buffers_last_draw = now
+
+        
     # ----------------------------------------------------------------------
     # PIEZOS PANEL
     # ----------------------------------------------------------------------
@@ -1368,4 +1577,6 @@ class Viewer(core.Worker):
 
     def normalize(self):
         self._set_event('normalize')
+
+        
 

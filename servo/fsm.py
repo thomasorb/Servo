@@ -16,12 +16,16 @@ class FsmEvent(Enum):
     NORMALIZE = auto()
     ERROR = auto()
     RESET = auto()
+    MOVE_TO_OPD = auto()
+    OPEN_LOOP = auto()
+    CLOSE_LOOP = auto()
 
 class FsmState(Enum):
     IDLE = auto()
     RUNNING = auto()
     FAILED = auto()
     STOPPED = auto()
+    STAY_AT_OPD = auto()
 
 @dataclass(frozen=True)
 class Transition:

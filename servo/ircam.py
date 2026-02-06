@@ -2,6 +2,7 @@ import numpy as np
 import time
 import logging
 import traceback
+import collections
 
 from . import NITLibrary_x64_382_py312 as NITLibrary
 
@@ -153,7 +154,7 @@ class DataObserver(NITLibrary.NITUserObserver):
         self.ypixels_list = None
         self.xpixels_list_pos = None
         self.ypixels_list_pos = None
-        
+        self.opd_deque = collections.deque(maxlen=config.BUFFER_SIZE)
         
     def onNewFrame(self, frame, get_roi=True):
         try:
@@ -166,7 +167,8 @@ class DataObserver(NITLibrary.NITUserObserver):
                 self.stats_last_index = (index // self.times.size) * self.times.size
                 diff_times = np.diff(self.times)
                 diff_ids = np.diff(self.ids)
-                log.info(f'frame {index} median sampling time: {np.nanmedian(diff_times)}, {np.sum(diff_times==0)}, {np.sum(diff_times==0)}, {np.sum(diff_ids!=1)}')
+                self.data['IRCamera.median_sampling_time'][0] = float(np.nanmedian(diff_times))
+                self.data['IRCamera.lost_frames'][0] = int(np.sum(diff_ids != 1) - 1)
                 self.times.fill(np.nan)
                 self.ids.fill(np.nan)
             
@@ -265,7 +267,14 @@ class DataObserver(NITLibrary.NITUserObserver):
                 opds[:2] = hopds
                 opds[2:] = vopds
                 self.data['IRCamera.opds'][:4] = opds.astype(config.FRAME_DTYPE)
-                
+
+                mean_opd = np.nanmean(opds)
+                self.data['IRCamera.mean_opd'][0] = float(mean_opd)
+                self.opd_deque.appendleft(float(mean_opd))
+                self.data['IRCamera.mean_opd_buffer'][:min(
+                    len(self.opd_deque), config.BUFFER_SIZE)] = np.array(
+                    self.opd_deque, dtype=config.FRAME_DTYPE)
+
                 last_angles[:2] = hangles
                 last_angles[2:] = vangles
                 self.data['IRCamera.last_angles'][:4] = last_angles.astype(config.FRAME_DTYPE)

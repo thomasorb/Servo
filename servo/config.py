@@ -6,6 +6,8 @@ import numpy as np
 IRCAM_DEFAULT_EXPOSURE_TIME = '1us'
 
 FRAME_DTYPE = np.float32
+DATA_DTYPE = np.float32
+
 FULL_FRAME_SHAPE = np.array((320, 256), dtype=int)
 FULL_FRAME_SIZE = np.prod(FULL_FRAME_SHAPE)
 FULL_FRAME_CENTER = np.array((FULL_FRAME_SHAPE[0]//2, FULL_FRAME_SHAPE[1]//2), dtype=int)
@@ -14,19 +16,30 @@ MIN_ROI_SHAPE = 32
 
 DAQ_PIEZO_LEVELS_DTYPE = np.float32
 DAQ_PIEZO_CHANNELS = [0, 2, 4] # OPD, DA-1, DA-2
-DAQ_CHANGE_SPEED = 3 # level change per second
+DAQ_CHANGE_SPEED = 5 # level change per second
 DAQ_LOOP_TIME = 0.01
 DAQ_MAX_LEVEL_CHANGE = DAQ_CHANGE_SPEED * DAQ_LOOP_TIME
+
+OPD_LOOP_TIME = 0.1  # 10 Hz loop
+PIEZO_V_MIN = 0.0
+PIEZO_V_MAX = 10.0
+OPD_TOLERANCE = 5.0  # nm
+BUFFER_SIZE = 100 # for servo values buffering
+VIEWER_BUFFER_SIZE = 1000 # for viewer servo values buffering
 
 DEFAULT_PROFILE_LEN = MIN_ROI_SHAPE
 DEFAULT_PROFILE_WIDTH = 4
 DEFAULT_PROFILE_POSITION = np.array((DEFAULT_PROFILE_LEN//2, DEFAULT_PROFILE_LEN//2), dtype=int)
 
+DEFAULT_PID = [1e-3, 0., 0.]
 
 SERVO_EVENTS = (
     'normalize',
     'stop',
     'start',
+    'move_to_opd',
+    'close_loop',
+    'open_loop',
 )
 
 # use only this part of the profiles for normalization coeffs computation
