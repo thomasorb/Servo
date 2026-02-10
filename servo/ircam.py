@@ -14,27 +14,48 @@ log = logging.getLogger(__name__)
 
 class IRCamera(core.Worker):
 
-    def __init__(self, data, events, roi_shape=None, roi_center=None):
+    def __init__(self, data, events, frame_shape=None, frame_center=None, roi_mode=False):
         
         super().__init__(data, events)
+
+        self.roi_mode = bool(roi_mode)
         
-        if roi_shape is None:
-            self.roi_shape = np.array(config.FULL_FRAME_SHAPE)
-            
-        if roi_center is None:
-            self.roi_position = np.array(config.DEFAULT_ROI_POSITION)
+        if frame_shape is None:
+            self.frame_shape = np.array(config.FULL_FRAME_SHAPE)
         else:
-            self.roi_position = np.array(roi_center) - roi_shape//2
+            self.frame_shape = np.array(frame_shape)
             
-        assert (0 <= self.roi_position[0] < config.FULL_FRAME_SHAPE[0]), f'bad x position: {self.roi_position[0]}'
-        assert (0 <= self.roi_position[1] < config.FULL_FRAME_SHAPE[1]), f'bad y position: {self.roi_position[1]}'
+        if frame_center is None:
+            self.frame_position = np.array(config.DEFAULT_FRAME_POSITION)
+        else:
+            self.frame_position = np.array(frame_center) - self.frame_shape//2
 
-        assert (config.MIN_ROI_SHAPE <= self.roi_shape[0] <= config.FULL_FRAME_SHAPE[0]), f'bad shape: {self.roi_shape[0]}'
-        assert (config.MIN_ROI_SHAPE <= self.roi_shape[1] <= config.FULL_FRAME_SHAPE[1]), f'bad shape: {self.roi_shape[1]}'
 
-        log.info(f'target ROI {self.roi_shape} at {self.roi_position}')
+        self.requested_frame_shape = np.copy(self.frame_shape)
+        self.requested_frame_position = np.copy(self.frame_position)
 
-        self.roi_size = np.prod(self.roi_shape)
+        # set frame shape and positions to camera accepted values
+        self.frame_shape = self.frame_shape // 8 * 8 # shape must be a multiple of 8
+        self.frame_position = self.frame_position // 4 * 4 # position must be a multiple of 4
+
+        if np.any(self.requested_frame_shape != self.frame_shape):
+            log.warning(f'frame shape {self.requested_frame_shape} was changed to {self.frame_shape} to fit camera requirements')
+        if np.any(self.requested_frame_position != self.frame_position):
+            log.warning(f'frame position {self.requested_frame_position} was changed to {self.frame_position} to fit camera requirements')
+            
+            
+        assert (0 <= self.frame_position[0] < config.FULL_FRAME_SHAPE[0]), f'bad x position: {self.frame_position[0]}'
+        assert (0 <= self.frame_position[1] < config.FULL_FRAME_SHAPE[1]), f'bad y position: {self.frame_position[1]}'
+
+        assert (config.MIN_ROI_SHAPE <= self.frame_shape[0] <= config.FULL_FRAME_SHAPE[0]), f'bad shape: {self.frame_shape[0]}'
+        assert (config.MIN_ROI_SHAPE <= self.frame_shape[1] <= config.FULL_FRAME_SHAPE[1]), f'bad shape: {self.frame_shape[1]}'
+
+        log.info(f'target FRAME {self.frame_shape} at {self.frame_position}')
+
+        self.frame_size = int(np.prod(self.frame_shape))
+        self.data['IRCamera.frame_size'][0] = int(self.frame_size)
+        self.data['IRCamera.frame_dimx'][0] = int(self.frame_shape[0])
+        self.data['IRCamera.frame_dimy'][0] = int(self.frame_shape[1])
         
         self.data = data
         
@@ -42,8 +63,7 @@ class IRCamera(core.Worker):
         log.info(self.nm.listDevices())
         self.dev = self.nm.openOneDevice()
         assert self.dev is not None, log.error("IR Camera not connected")
-
-
+        
         self.config_obs = ConfigObserver()
         self.dev << self.config_obs
         
@@ -61,10 +81,10 @@ class IRCamera(core.Worker):
         self.dev.setParamValueOf("Sensor Response", 1).updateConfig()
         self.dev.setParamValueOf("Analog Gain", "Low").updateConfig()
         
-        self.dev.setParamValueOf("Number Of Columns", int(self.roi_shape[0]))
-        self.dev.setParamValueOf("Number Of Lines", int(self.roi_shape[1]))
-        self.dev.setParamValueOf("First Column", int(self.roi_position[0]))
-        self.dev.setParamValueOf("First Line", int(self.roi_position[1]))
+        self.dev.setParamValueOf("Number Of Columns", int(self.frame_shape[0]))
+        self.dev.setParamValueOf("Number Of Lines", int(self.frame_shape[1]))
+        self.dev.setParamValueOf("First Column", int(self.frame_position[0]))
+        self.dev.setParamValueOf("First Line", int(self.frame_position[1]))
         
         self.dev.setParamValueOf("ExposureTime", config.IRCAM_DEFAULT_EXPOSURE_TIME)
         self.dev.updateConfig()
@@ -81,7 +101,8 @@ class IRCamera(core.Worker):
         #self.agc = NITLibrary.NITToolBox.NITAutomaticGainControl()
         #self.player = NITLibrary.NITToolBox.NITPlayer("Player")
         #self.dev << self.agc #<< self.player
-        self.data_observer = DataObserver(self.data, self.roi_position, self.roi_shape)
+        self.data_observer = DataObserver(self.data, self.frame_position, self.frame_shape,
+                                          self.roi_mode)
         self.dev << self.data_observer
         self.data['IRCamera.initialized'][0] = True
         
@@ -94,6 +115,7 @@ class IRCamera(core.Worker):
 
     def stop(self):
         self.dev.stop()      #Stop Capture
+        
         log.info('capture stopped')
 
         
@@ -137,16 +159,18 @@ class ConfigObserver(NITLibrary.NITConfigObserver):
 class DataObserver(NITLibrary.NITUserObserver):
 
     
-    def __init__(self, data, roi_position, roi_shape):
+    def __init__(self, data, frame_position, frame_shape, roi_mode=False):
 
         super().__init__()
+        self.roi_mode = bool(roi_mode)
         self.data = data
-        self.roi_position = roi_position
-        self.roi_shape = roi_shape
+        self.frame_position = frame_position
+        self.frame_shape = frame_shape
+        self.frame_size = int(np.prod(self.frame_shape))
         self.times = np.full(1000, np.nan, dtype=float)
         self.ids = np.full_like(self.times, np.nan)
-        self.last_frame_out_time = 0
-        self.frame_out_period = 0.1 # s
+        self.last_viewer_out_time = 0
+        self.last_servo_out_time = 0
         self.stats_last_index = 0
         self.x_pixels_states = None
         self.y_pixels_states = None
@@ -156,129 +180,151 @@ class DataObserver(NITLibrary.NITUserObserver):
         self.ypixels_list_pos = None
         self.opd_deque = collections.deque(maxlen=config.BUFFER_SIZE)
         
-    def onNewFrame(self, frame, get_roi=True):
+    def onNewFrame(self, frame):
         try:
             index = int(frame.id()) - 1
             frame_time = time.time()
             self.times[index % self.times.size] = frame_time
             self.ids[index % self.times.size] = index
 
+            # get stats when buffer fulled
             if index > self.stats_last_index + self.times.size: # buffers were fulled
-                self.stats_last_index = (index // self.times.size) * self.times.size
-                diff_times = np.diff(self.times)
+                self.stats_last_index = (index // self.times.size) * self.times.size               
                 diff_ids = np.diff(self.ids)
-                self.data['IRCamera.median_sampling_time'][0] = float(np.nanmedian(diff_times))
+                mean_sampling_time = float(
+                    (np.nanmax(self.times) - np.nanmin(self.times)) / np.sum(
+                        ~np.isnan(self.times)))
+                self.data['IRCamera.median_sampling_time'][0] = mean_sampling_time
                 self.data['IRCamera.lost_frames'][0] = int(np.sum(diff_ids != 1) - 1)
                 self.times.fill(np.nan)
                 self.ids.fill(np.nan)
-            
-            if frame_time - self.last_frame_out_time > self.frame_out_period:
-                self.last_frame_out_time = frame_time
 
-                frame_data = frame.data().T.flatten()
-                self.data['IRCamera.last_frame'][:self.data['IRCamera.frame_size'][0]] = frame_data
+            # viewer output
+            if frame_time - self.last_viewer_out_time > config.IRCAM_VIEWER_OUTPUT_TIME:
+                self.last_viewer_out_time = frame_time
+                self.data['IRCamera.last_frame'][:self.frame_size] = frame.data().T.flatten()
+
+            # check if we want a full servo output or only fast opd computation
+            # to detect opd loss
+            if frame_time - self.last_servo_out_time > config.IRCAM_SERVO_OUTPUT_TIME:
+                self.last_servo_out_time = frame_time
+                compute_servo_output = True
+            else:
+                compute_servo_output = False
 
             try:
                 # profile x and y always set in full frame coordinates
-                ix = self.data['IRCamera.profile_x'][0] - self.roi_position[0]
-                iy = self.data['IRCamera.profile_y'][0] - self.roi_position[1]
-                profile_len = self.data['IRCamera.profile_len'][0]
+                if self.roi_mode:
+                    ix, iy = self.frame_shape//2
+                    profile_len = min(self.frame_shape)
+                else:
+                    ix = self.data['IRCamera.profile_x'][0] - self.frame_position[0]
+                    iy = self.data['IRCamera.profile_y'][0] - self.frame_position[1]
+                    profile_len = self.data['IRCamera.profile_len'][0]
+                    
                 profile_width = self.data['IRCamera.profile_width'][0]
                 ilen = int(profile_len)
-                if ilen > np.min(self.roi_shape): ilen = np.min(self.roi_shape)
+                if ilen > np.min(self.frame_shape): ilen = np.min(self.frame_shape)
                 iwid = int(profile_width)
 
-                hprofile, vprofile, roi = utils.compute_profiles(frame.data().T, ix, iy,
-                                                                 iwid, ilen,
-                                                                 get_roi=get_roi)
+                try:
+                    hprofile, vprofile, roi = utils.compute_profiles(frame.data().T, ix, iy,
+                                                                     iwid, ilen,
+                                                                     get_roi=True)
 
-                # nan padded versions
-                if hprofile.size != ilen:
-                    hprofile_np = np.full(profile_len, np.nan, dtype=hprofile.dtype)
-                    hprofile_np[:np.size(hprofile)] = hprofile
-                else:
-                    hprofile_np = hprofile
-
-                if vprofile.size != ilen:
-                    vprofile_np = np.full(profile_len, np.nan, dtype=vprofile.dtype)
-                    vprofile_np[:np.size(vprofile)] = vprofile
-                else:
-                    vprofile_np = vprofile
-
-
-                self.data['IRCamera.hprofile'][:profile_len] = hprofile_np
-                self.data['IRCamera.vprofile'][:profile_len] = vprofile_np
-                if get_roi:
+                except Exception as e:
+                    log.error(f'Error at computing profiles on camera {traceback.format_exc()}')
+                    return
+                
+                
+                if compute_servo_output:
+                    self.data['IRCamera.hprofile'][:profile_len] = hprofile
+                    self.data['IRCamera.vprofile'][:profile_len] = vprofile    
                     self.data['IRCamera.roi'][:profile_len**2] = roi.flatten()
 
-                # normalized profiles
-                hnorm_min = self.data['Servo.hnorm_min'][:profile_len]
-                hnorm_max = self.data['Servo.hnorm_max'][:profile_len]
-                vnorm_min = self.data['Servo.vnorm_min'][:profile_len]
-                vnorm_max = self.data['Servo.vnorm_max'][:profile_len]
-                hprofile_normalized = utils.normalize_profile(
-                    hprofile_np, hnorm_min, hnorm_max)
-                vprofile_normalized = utils.normalize_profile(
-                    vprofile_np, vnorm_min, vnorm_max)
-                self.data['IRCamera.hprofile_normalized'][:profile_len] = hprofile_normalized
-                self.data['IRCamera.vprofile_normalized'][:profile_len] = vprofile_normalized
-                
+              
                 # compute levels
-                
-                x_pixels_states = self.data['Servo.pixels_x']
-                y_pixels_states = self.data['Servo.pixels_y']
-                if self.x_pixels_states is None or not np.array_equal(
-                        self.x_pixels_states, x_pixels_states):
-                    self.x_pixels_states = np.copy(x_pixels_states)
-                    self.xpixels_list = utils.get_pixels_lists(x_pixels_states)
-                    self.xpixels_list_pos = utils.get_mean_pixels_positions(self.xpixels_list)
-                    self.data['IRCamera.hprofile_levels_pos'][:3] = self.xpixels_list_pos
-                    
-                if self.y_pixels_states is None or not np.array_equal(
-                        self.y_pixels_states, y_pixels_states):
-                    self.y_pixels_states = np.copy(y_pixels_states)
-                    self.ypixels_list = utils.get_pixels_lists(y_pixels_states)
-                    self.ypixels_list_pos = utils.get_mean_pixels_positions(self.ypixels_list)
-                    self.data['IRCamera.vprofile_levels_pos'][:3] = self.ypixels_list_pos
-                    
-                hlevels = utils.compute_profile_levels(
-                    hprofile_normalized, self.xpixels_list)
-                vlevels = utils.compute_profile_levels(
-                    vprofile_normalized, self.ypixels_list)
+                if compute_servo_output:
 
-                self.data['IRCamera.hprofile_levels'][:3] = hlevels
-                self.data['IRCamera.vprofile_levels'][:3] = vlevels
-                
+                    # get updated data and output normalized profiles
+                    self.hnorm_min = np.ascontiguousarray(
+                        self.data['Servo.hnorm_min'][:profile_len], dtype=config.DATA_DTYPE)
+                    self.hnorm_max = np.ascontiguousarray(
+                        self.data['Servo.hnorm_max'][:profile_len], dtype=config.DATA_DTYPE)
+                    self.vnorm_min = np.ascontiguousarray(
+                        self.data['Servo.vnorm_min'][:profile_len], dtype=config.DATA_DTYPE)
+                    self.vnorm_max = np.ascontiguousarray(
+                        self.data['Servo.vnorm_max'][:profile_len], dtype=config.DATA_DTYPE)
+
+                    x_pixels_states = self.data['Servo.pixels_x']
+                    y_pixels_states = self.data['Servo.pixels_y']
+                    if self.x_pixels_states is None or not np.array_equal(
+                            self.x_pixels_states, x_pixels_states):
+                        self.x_pixels_states = np.copy(x_pixels_states)
+                        self.xpixels_list = utils.get_pixels_lists(x_pixels_states)
+                        self.xpixels_list_pos = utils.get_mean_pixels_positions(self.xpixels_list)
+                        self.data['IRCamera.hprofile_levels_pos'][:3] = self.xpixels_list_pos
+
+                    if self.y_pixels_states is None or not np.array_equal(
+                            self.y_pixels_states, y_pixels_states):
+                        self.y_pixels_states = np.copy(y_pixels_states)
+                        self.ypixels_list = utils.get_pixels_lists(y_pixels_states)
+                        self.ypixels_list_pos = utils.get_mean_pixels_positions(self.ypixels_list)
+                        self.data['IRCamera.vprofile_levels_pos'][:3] = self.ypixels_list_pos
+
+                    self.data['IRCamera.hprofile_normalized'][:profile_len] = utils.normalize_profile(hprofile, self.hnorm_min, self.hnorm_max, inplace=False)
+                    self.data['IRCamera.vprofile_normalized'][:profile_len] = utils.normalize_profile(vprofile, self.vnorm_min, self.vnorm_max, inplace=False)
+
+
+                # directly normalize and compute levels             
+                hlevels = np.ascontiguousarray(np.empty(3, dtype=config.DATA_DTYPE))
+                for i in range(3):
+                    hlevels[i] = utils.normalize_and_compute_profile_level(
+                        hprofile, self.hnorm_min, self.hnorm_max,
+                        self.xpixels_list[i])
+
+                vlevels = np.ascontiguousarray(np.empty(3, dtype=config.DATA_DTYPE))
+                for i in range(3):
+                    vlevels[i] = utils.normalize_and_compute_profile_level(
+                        vprofile, self.vnorm_min, self.vnorm_max,
+                        self.ypixels_list[i])
+
+                if compute_servo_output:
+                    self.data['IRCamera.hprofile_levels'][:3] = hlevels
+                    self.data['IRCamera.vprofile_levels'][:3] = vlevels
+
                 # compute angles and opd
-                last_angles = self.data['IRCamera.last_angles'][:4]
-                opds = np.empty_like(last_angles)
-                
-                hellipse_norm_coeffs = self.data['Servo.hellipse_norm_coeffs'][:4]
-                vellipse_norm_coeffs = self.data['Servo.vellipse_norm_coeffs'][:4]
-                
-                hangles = utils.compute_angles(hlevels, hellipse_norm_coeffs)
-                hangles = utils.unwrap_angles(hangles, last_angles[:2])
-                hopds = utils.compute_opds(hangles)
-                
-                vangles = utils.compute_angles(vlevels, vellipse_norm_coeffs)
-                vangles = utils.unwrap_angles(vangles, last_angles[2:])
-                vopds = utils.compute_opds(vangles)
+                last_angles = np.ascontiguousarray(self.data['IRCamera.last_angles'][:4], dtype=config.DATA_DTYPE)
+                angles = np.ascontiguousarray(np.empty_like(last_angles))
 
-                opds[:2] = hopds
-                opds[2:] = vopds
-                self.data['IRCamera.opds'][:4] = opds.astype(config.FRAME_DTYPE)
+                if compute_servo_output:
+                    self.hellipse_norm_coeffs = np.ascontiguousarray(
+                        self.data['Servo.hellipse_norm_coeffs'][:4], dtype=config.DATA_DTYPE)
+                    self.vellipse_norm_coeffs = np.ascontiguousarray(
+                        self.data['Servo.vellipse_norm_coeffs'][:4], dtype=config.DATA_DTYPE)
+                    
 
-                mean_opd = np.nanmean(opds)
-                self.data['IRCamera.mean_opd'][0] = float(mean_opd)
-                self.opd_deque.appendleft(float(mean_opd))
-                self.data['IRCamera.mean_opd_buffer'][:min(
-                    len(self.opd_deque), config.BUFFER_SIZE)] = np.array(
-                    self.opd_deque, dtype=config.FRAME_DTYPE)
-
-                last_angles[:2] = hangles
-                last_angles[2:] = vangles
-                self.data['IRCamera.last_angles'][:4] = last_angles.astype(config.FRAME_DTYPE)
+                angles[:2] = utils.compute_angles(
+                    hlevels, self.hellipse_norm_coeffs, last_angles[:2])
                 
+                angles[2:] = utils.compute_angles(
+                    vlevels, self.vellipse_norm_coeffs, last_angles[2:])
+                opds = utils.compute_opds(angles)
+
+                mean_opd = utils.mean(opds)
+                
+                
+                if compute_servo_output:
+                    self.data['IRCamera.opds'][:4] = opds.astype(config.FRAME_DTYPE)
+                    self.data['IRCamera.mean_opd'][0] = float(mean_opd)
+
+                if compute_servo_output:
+                    self.opd_deque.appendleft(float(mean_opd))
+                    self.data['IRCamera.mean_opd_buffer'][:min(
+                        len(self.opd_deque), config.BUFFER_SIZE)] = np.array(
+                            self.opd_deque, dtype=config.FRAME_DTYPE)
+
+                self.data['IRCamera.last_angles'][:4] = angles
                 
                 
                         

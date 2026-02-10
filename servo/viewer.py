@@ -14,6 +14,7 @@ from collections import deque
 
 from . import core
 from . import config
+from . import utils
 
 log = logging.getLogger(__name__)
 
@@ -537,6 +538,10 @@ class Viewer(core.Worker):
                                           command=self.move_to_opd)
         self.move_to_opd_btn.pack(side=tk.RIGHT, padx=10)
 
+        self.roi_mode_btn = ttk.Button(toolbar, text="ROI MODE",
+                                       command=self.toggle_roi_mode)
+        self.roi_mode_btn.pack(side=tk.RIGHT, padx=10)
+        self._roi_mode = False
 
         # ------------------------------------------------------------------
         # Info panel
@@ -809,31 +814,29 @@ class Viewer(core.Worker):
     # ----------------------------------------------------------------------
     # ZOOM / PAN
     # ----------------------------------------------------------------------
+    def fit_image_to_canvas(self):
+        """Fit the image to the canvas size."""
+        cw = self.canvas.winfo_width()
+        ch = self.canvas.winfo_height()
+        if cw <= 1 or ch <= 1 or self.img_w <= 0 or self.img_h <= 0:
+            return
+        self.scale = min(cw / self.img_w, ch / self.img_h)
+        self.offset_x = (cw - self.img_w * self.scale) / 2
+        self.offset_y = (ch - self.img_h * self.scale) / 2
+        # ROI preview carré sur la colonne de droite (comme tu le faisais)
+        size = max(1, min(self._right_col.winfo_width(), self._right_col.winfo_height()))
+        self.roi_canvas.config(width=size, height=size)
+        self.fitted = True
+        self.render()
+
+    
     def on_resize(self, event):
         if not self.fitted:
-            cw = self.canvas.winfo_width()
-            ch = self.canvas.winfo_height()
-            if cw <= 1 or ch <= 1:
-                return
-            self.scale = min(cw/self.img_w, ch/self.img_h)
-            self.offset_x = (cw - self.img_w*self.scale) / 2
-            self.offset_y = (ch - self.img_h*self.scale) / 2
-
-            size = max(1, min(self._right_col.winfo_width(), self._right_col.winfo_height()))
-
-            # Redimensionner le canvas pour qu'il soit carré
-            self.roi_canvas.config(width=size, height=size)
-
-            # Le repositionner au centre
-            #self.roi_canvas.place(relx=0.5, rely=0.5, anchor="center", width=size, height=size)
-
-            self.fitted = True
-            self.render()
-
+            self.fit_image_to_canvas()
 
     def reset_zoom(self):
         self.fitted = False
-        self.on_resize(None)
+        self.fit_image_to_canvas()
 
     def zoom_at(self, cx, cy, factor):
         old = self.scale
@@ -896,7 +899,7 @@ class Viewer(core.Worker):
             pass
 
     def add_marker(self, ix, iy):
-        val = float(self.frame[ix, iy])
+        if self._roi_mode: return
         
         # Remove old markers
         for item, _, _ in self.points:
@@ -911,37 +914,42 @@ class Viewer(core.Worker):
         self.points.append((p, ix, iy))
             
     def on_left_release_dispatch(self, event):
-        #if self.roi_active:
-        #    self.roi_end_event(event)
-        #    return
-
+        
         # Normal click → marker + CSV
         if self._normal_click_start:
+            if self._roi_mode: return
+
             ix, iy = self.canvas_to_image(event.x, event.y)
+            
+            ix, iy = utils.validate_roi_position((ix, iy))
+            
             if 0 <= ix < self.img_w and 0 <= iy < self.img_h:
                 self.add_marker(ix, iy)
+                
                 self.data['IRCamera.profile_x'][0] = int(ix)
                 self.data['IRCamera.profile_y'][0] = int(iy)
                 
-                
             self._normal_click_start = None
 
-    
     def on_len_changed(self, *args):
+        if self._roi_mode:
+            self.profile_len.set(self.data['IRCamera.profile_len'][0])
+            log.warning('length cannot be changed in ROI mode')
+            return
+
         profile_len = self.profile_len.get()
-        if profile_len%2:
-            profile_len += 1
-            self.profile_len.set(profile_len)
-            log.warning(f'profile_len must be even, changed to {profile_len}')
-        
+
+        profile_len = utils.validate_roi_len(profile_len)
+                
         log.info(f"Profile length updated: {profile_len}")
         
         self.data['IRCamera.profile_len'][0] = int(self.profile_len.get())
-        if hasattr(self, 'points'):
-            if self.points:
-                _, mx, my = self.points[0]
-                self.update_profiles(mx, my)
-
+        try:
+            self.update_profiles()
+        except Exception as e:
+            log.error(f"Error updating profiles after length change: {e}")
+            return
+        
         self.hbar.set_count(profile_len)
         #self.hbar.pack(side=tk.LEFT, padx=(6, 0))
         self.vbar.set_count(profile_len)
@@ -1006,7 +1014,17 @@ class Viewer(core.Worker):
             self._close_loop = True
             self.close_loop_btn.config(text="OPEN LOOP")
             self._set_event('close_loop')
-            
+
+    def toggle_roi_mode(self):
+        if self._roi_mode:
+            self._roi_mode = False
+            self.roi_mode_btn.config(text="ROI MODE")
+            self._set_event('full_frame_mode')
+        else:
+            self._roi_mode = True
+            self.roi_mode_btn.config(text="FF MODE")
+            self._set_event('roi_mode')
+
     # ----------------------------------------------------------------------
     # MOVE TO OPD
     # ----------------------------------------------------------------------
@@ -1121,11 +1139,18 @@ class Viewer(core.Worker):
             return
 
         try:
-            raw = self.data['IRCamera.last_frame'][
-                 :self.data['IRCamera.frame_size'][0]
-            ]
+            # detect image size change
+            prev_w, prev_h = getattr(self, "img_w", None), getattr(self, "img_h", None)
+            self.img_w = self.data['IRCamera.frame_dimx'][0]
+            self.img_h = self.data['IRCamera.frame_dimy'][0]
+
+            raw = self.data['IRCamera.last_frame'][:self.data['IRCamera.frame_size'][0]]
             new_frame = np.array(raw).reshape((self.img_w, self.img_h))
             self.frame = new_frame
+
+            if (prev_w, prev_h) != (self.img_w, self.img_h):
+                self.fitted = False
+                self.fit_image_to_canvas()
             
         except Exception as e:
             log.error(f'error at frame refresh: {e}')
@@ -1134,16 +1159,20 @@ class Viewer(core.Worker):
             # profile_len may be different from profile_len set in viewer
             profile_len = self.data['IRCamera.profile_len'][0]
             self.roi_shape = (profile_len, profile_len)
-            raw = self.data['IRCamera.roi'][
-                 :profile_len**2]
-            new_frame = np.array(raw).reshape(self.roi_shape)
+            if self._roi_mode:
+                new_frame = self.frame
+            else:
+                raw = self.data['IRCamera.roi'][
+                    :profile_len**2]
+                new_frame = np.array(raw).reshape(self.roi_shape)
 
-            if self._show_normalized:                
+            if self._show_normalized:
                 raw_min = self.data['Servo.roinorm_min'][:profile_len**2]
                 raw_min = np.array(raw_min).reshape(self.roi_shape)
                 raw_max = self.data['Servo.roinorm_max'][:profile_len**2]
                 raw_max = np.array(raw_max).reshape(self.roi_shape)
                 new_frame = np.clip((new_frame - raw_min) / (raw_max - raw_min), 0, 1)
+                
             self.roi_image = new_frame
             
             
@@ -1156,17 +1185,13 @@ class Viewer(core.Worker):
             log.error(f'error at rendering: {traceback.format_exc()}')
 
         
-        # Update profiles centered on marker (if one exists)
-        if hasattr(self, 'points'):
-            if self.points:
-                _, mx, my = self.points[0]
-                if 0 <= mx < self.img_w and 0 <= my < self.img_h:
-                    try:
-                        self.update_profiles(mx, my)
-                        self.update_status()
-                    except Exception as e:
-                        print(e)
-
+        # Update profiles
+        try:
+            self.update_profiles()
+            self.update_status()
+        except Exception as e:
+            print(e)
+                        
         try:
             self._update_buffers_tab()
         except Exception as e:
@@ -1188,24 +1213,10 @@ class Viewer(core.Worker):
     # -----------------------------------------------
     # HORIZONTAL AND VERTICAL PROFILES
     # -----------------------------------------------
-    def update_profiles(self, ix, iy):
+    def update_profiles(self):
         """
-        Update horizontal & vertical profiles centered on (ix, iy)
-        using the radius given by user.
+        Update horizontal & vertical profiles 
         """
-        # r = int(self.profile_len.get())
-        # h, w = self.frame.shape
-
-        # # Horizontal window: y = iy, x in [ix-r, ix+r]
-        # x0 = max(0, ix - r)
-        # x1 = min(w - 1, ix + r)
-        # horiz = self.frame[iy, x0:x1+1]
-
-        # # Vertical window: x = ix, y in [iy-r, iy+r]
-        # y0 = max(0, iy - r)
-        # y1 = min(h - 1, iy + r)
-        # vert = self.frame[y0:y1+1, ix]
-
         profile_len = self.data['IRCamera.profile_len'][0]
         
         hlevels = self.data['IRCamera.hprofile_levels'][:profile_len]
@@ -1573,10 +1584,10 @@ class Viewer(core.Worker):
 
     # events
     def stop_servo(self):
-        self._set_event('stop')
+        self._set_event('Servo.stop')
 
     def normalize(self):
-        self._set_event('normalize')
+        self._set_event('Servo.normalize')
 
         
 

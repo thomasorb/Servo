@@ -19,6 +19,8 @@ class FsmEvent(Enum):
     MOVE_TO_OPD = auto()
     OPEN_LOOP = auto()
     CLOSE_LOOP = auto()
+    ROI_MODE = auto()
+    FULL_FRAME_MODE = auto()
 
 class FsmState(Enum):
     IDLE = auto()

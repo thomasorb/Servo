@@ -13,6 +13,7 @@ from . import piezo
 from . import config
 from . import utils
 from . import pid
+from . import nexline
 
 from .fsm import StateMachine, FsmEvent, FsmState, Transition
 
@@ -20,14 +21,16 @@ from .fsm import StateMachine, FsmEvent, FsmState, Transition
 log = logging.getLogger(__name__)
 
 
-def worker_process(queue, data, WorkerClass, events, priority=None):
+def worker_process(queue, data, WorkerClass, events, priority=None, kwargs=None):
     """
     Subprocess that:
       - configures logging
       - instantiates and runs the worker
       - guarantees worker.stop() is called
     """
-
+    if kwargs is None:
+        kwargs = {}
+    
     # Optionally adjust process priority
     if priority is not None:
         try:
@@ -45,7 +48,7 @@ def worker_process(queue, data, WorkerClass, events, priority=None):
     
     try:
         # Instantiate user worker
-        worker = WorkerClass(data, events)
+        worker = WorkerClass(data, events, **kwargs)
         worker.run()
 
     except Exception:
@@ -82,6 +85,11 @@ class Servo(StateMachine):
                 FsmState.RUNNING, action=self._open_loop),          
             (FsmState.FAILED,  FsmEvent.RESET): Transition(FsmState.IDLE),
             (FsmState.STOPPED, FsmEvent.RESET): Transition(FsmState.IDLE),
+            (FsmState.RUNNING, FsmEvent.ROI_MODE): Transition(
+                FsmState.RUNNING, action=self._roi_mode),
+            (FsmState.RUNNING, FsmEvent.FULL_FRAME_MODE): Transition(
+                FsmState.RUNNING, action=self._full_frame_mode),
+            
         }
         super().__init__(FsmState.IDLE, table)
 
@@ -89,7 +97,11 @@ class Servo(StateMachine):
         self.events = self.event_manager.dict()
 
         for iname in config.SERVO_EVENTS:
-            self.events[iname] = self.event_manager.Event()
+            self.events['Servo.' + iname] = self.event_manager.Event()
+
+        for iname in config.NEXLINE_EVENTS:
+            self.events['Nexline.' + iname] = self.event_manager.Event()
+
 
         self.queue = logger.get_logging_queue()
 
@@ -100,8 +112,8 @@ class Servo(StateMachine):
         evs = self.events
 
         for iname in config.SERVO_EVENTS:
-            if evs.get(iname) and evs[iname].is_set():
-                evs[iname].clear()
+            if evs.get('Servo.' + iname) and evs['Servo.' + iname].is_set():
+                evs['Servo.' + iname].clear()
                 self.dispatch(getattr(FsmEvent, iname.upper()), payload=None)
 
     # Hooks (facultatif)
@@ -117,7 +129,7 @@ class Servo(StateMachine):
                 time.sleep(0.1)
             except KeyboardInterrupt:
                 log.error('Keyboard interrupt')
-                self.events('stop').set()
+                self.events('Servo.stop').set()
                 
 
         
@@ -131,7 +143,7 @@ class Servo(StateMachine):
         
         log.info(f"   OPD target: {opd_target} nm")
         
-        dt = config.OPD_LOOP_TIME  # 1 kHz loop (adjust to your hardware timing)
+        dt = config.OPD_LOOP_TIME  
 
         while True:
             try:
@@ -156,26 +168,38 @@ class Servo(StateMachine):
                         setpoint=opd_target,
                         measurement=opd)
                 else:
-                    self.events['open_loop'].set()
+                    self.events['Servo.open_loop'].set()
                     break
 
                 self.poll()
 
-                if self.events['stop'].is_set():
+                if self.events['Servo.stop'].is_set():
                       break
 
-                if self.events['open_loop'].is_set():
+                if self.events['Servo.open_loop'].is_set():
                       break
 
                 time.sleep(config.OPD_LOOP_TIME)
                 
             except KeyboardInterrupt:
                 log.error('Keyboard interrupt')
-                self.events('stop').set()
+                self.events('Servo.stop').set()
                 break
 
     def on_exit_stay_at_opd(self, _):
         log.info("<< STAY_AT_OPD")
+
+
+    def start_worker(self, WorkerClass, priority, **kwargs):
+        stop_event_name = f"{WorkerClass.__name__}.stop"
+        self.events[stop_event_name] = self.event_manager.Event()
+        
+        worker = multiprocessing.Process(target=worker_process,
+                                         args=(self.queue, self.data, WorkerClass,
+                                               self.events, priority, kwargs))
+        self.workers.append((worker, stop_event_name))
+        worker.start()
+
         
     # Actions
     def _start(self, _):
@@ -184,23 +208,16 @@ class Servo(StateMachine):
         ## start all threads
         self.workers = list()
 
-        def start_worker(WorkerClass, priority):
-            stop_event_name = f"{WorkerClass.__name__}.stop"
-            self.events[stop_event_name] = self.event_manager.Event()
-
-            worker = multiprocessing.Process(target=worker_process,
-                                             args=(self.queue, self.data, WorkerClass,
-                                                   self.events, priority))
-            self.workers.append((worker, stop_event_name))
-            worker.start()
-
 
         # start ir camera
         if not self.nocam:
-            start_worker(ircam.IRCamera, -20)
+            self.start_worker(ircam.IRCamera, -20)
 
+        # start nexline
+        self.start_worker(nexline.Nexline, 0)
+        
         # start piezos
-        start_worker(piezo.DAQ, 0)
+        self.start_worker(piezo.DAQ, 0)
 
         # start viewer
         if not self.noviewer:
@@ -208,12 +225,12 @@ class Servo(StateMachine):
                 while True:
                     time.sleep(0.1)
                     if self.data['IRCamera.initialized'][0]: break
-            start_worker(viewer.Viewer, 10)
+            self.start_worker(viewer.Viewer, 10)
 
 
     def _normalize(self, _):
         log.info("Normalizing")
-
+        
         start_value = 3
         end_value = 7
         recall_value = self.data['DAQ.piezos_level'][0]
@@ -235,7 +252,7 @@ class Servo(StateMachine):
             while True:
                 if self.data['DAQ.piezos_level_actual'][0] == val:
                     break
-                if self.events['stop'].is_set():
+                if self.events['Servo.stop'].is_set():
                     break
                 if rec:
                     rec_hprofiles.append(np.copy(self.data['IRCamera.hprofile'][:profile_len]))
@@ -277,20 +294,23 @@ class Servo(StateMachine):
             rec_hprofiles, hnorm, hpixels_lists)
         vellipse_norm_coeffs = utils.get_ellipse_normalization_coeffs(
             rec_vprofiles, vnorm, vpixels_lists)
-        
+
         self.data['Servo.hellipse_norm_coeffs'][:4] = hellipse_norm_coeffs.astype(
-            config.FRAME_DTYPE)
+            config.DATA_DTYPE)
         
         self.data['Servo.vellipse_norm_coeffs'][:4] = vellipse_norm_coeffs.astype(
-            config.FRAME_DTYPE)
-        
+            config.DATA_DTYPE)
         
         np.save('hprofiles.npy', np.array(rec_hprofiles))
         np.save('vprofiles.npy', np.array(rec_vprofiles))
         np.save('rois.npy', np.array(rec_rois))
 
+                
     def _move_to_opd(self, _):
         log.info("Moving to OPD")
+
+        self.events['Nexline.move'].set()
+
 
         opd_target = self.data['Servo.opd_target'][0]
         
@@ -326,7 +346,7 @@ class Servo(StateMachine):
                 log.info(f"OPD target reached: {opd} nm")
                 break
 
-            if self.events['stop'].is_set():
+            if self.events['Servo.stop'].is_set():
                   break
                                   
             time.sleep(config.OPD_LOOP_TIME)
@@ -339,6 +359,34 @@ class Servo(StateMachine):
 
     def _open_loop(self, _):
         log.info("Opening loop")
+
+    def _roi_mode(self, _):
+        if self.nocam:
+            log.warning("Cannot switch to ROI mode: no camera")
+            return
+
+        log.info("Switching to ROI mode")
+        self.events['IRCamera.stop'].set()
+
+        w = self.data['IRCamera.profile_len'][0]
+        x = self.data['IRCamera.profile_x'][0]
+        y = self.data['IRCamera.profile_y'][0]
+        self.start_worker(ircam.IRCamera, -20,
+                          frame_shape=(w, w),
+                          frame_center=(x, y),
+                          roi_mode=True)
+        
+
+    def _full_frame_mode(self, _):
+        if self.nocam:
+            log.warning("Cannot switch to full frame mode: no camera")
+            return
+
+        log.info("Switching to full frame mode")
+        self.events['IRCamera.stop'].set()
+
+        self.start_worker(ircam.IRCamera, -20)
+        
         
     def _stop(self, _):
         log.info("Stopping Servo")

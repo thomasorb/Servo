@@ -4,6 +4,9 @@ import numpy as np
 #ROI_SIZE = np.prod(ROI_SHAPE)
 
 IRCAM_DEFAULT_EXPOSURE_TIME = '1us'
+IRCAM_SERVO_OUTPUT_TIME = 0.001 #s
+IRCAM_VIEWER_OUTPUT_TIME = 0.1 #s
+
 
 FRAME_DTYPE = np.float32
 DATA_DTYPE = np.float32
@@ -11,7 +14,7 @@ DATA_DTYPE = np.float32
 FULL_FRAME_SHAPE = np.array((320, 256), dtype=int)
 FULL_FRAME_SIZE = np.prod(FULL_FRAME_SHAPE)
 FULL_FRAME_CENTER = np.array((FULL_FRAME_SHAPE[0]//2, FULL_FRAME_SHAPE[1]//2), dtype=int)
-DEFAULT_ROI_POSITION = np.array((0, 0), dtype=int) # first column, first line
+DEFAULT_FRAME_POSITION = np.array((0, 0), dtype=int) # first column, first line
 MIN_ROI_SHAPE = 32
 
 DAQ_PIEZO_LEVELS_DTYPE = np.float32
@@ -40,11 +43,21 @@ SERVO_EVENTS = (
     'move_to_opd',
     'close_loop',
     'open_loop',
+    'roi_mode',
+    'full_frame_mode',
 )
+
+NEXLINE_EVENTS = (
+    'start',
+    'move',
+    'stop_move',
+    )
 
 # use only this part of the profiles for normalization coeffs computation
 NORMALIZATION_LEN_RATIO = 0.7
 
 
 CALIBRATION_LASER_WAVELENGTH = 1550 # nm
-
+LASER_ANGLE = 25 # angle of the laser in degrees
+NEXLINE_CHANNEL = 1
+NEXLINE_STEP_SIZE = 5 # um in mechanical path difference
