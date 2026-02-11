@@ -6,7 +6,7 @@ import numpy as np
 IRCAM_DEFAULT_EXPOSURE_TIME = '1us'
 IRCAM_SERVO_OUTPUT_TIME = 0.001 #s
 IRCAM_VIEWER_OUTPUT_TIME = 0.1 #s
-
+IRCAM_BUFFER_SIZE = 10000
 
 FRAME_DTYPE = np.float32
 DATA_DTYPE = np.float32
@@ -23,12 +23,17 @@ DAQ_CHANGE_SPEED = 5 # level change per second
 DAQ_LOOP_TIME = 0.01
 DAQ_MAX_LEVEL_CHANGE = DAQ_CHANGE_SPEED * DAQ_LOOP_TIME
 
+
 OPD_LOOP_TIME = 0.1  # 10 Hz loop
 PIEZO_V_MIN = 0.0
 PIEZO_V_MAX = 10.0
 OPD_TOLERANCE = 5.0  # nm
+PIEZO_MAX_OPD_DIFF = 5000 # nm
+
 BUFFER_SIZE = 100 # for servo values buffering
 VIEWER_BUFFER_SIZE = 1000 # for viewer servo values buffering
+
+VIEWER_ELLIPSE_DRAW_BUFFER_SIZE = 100
 
 DEFAULT_PROFILE_LEN = MIN_ROI_SHAPE
 DEFAULT_PROFILE_WIDTH = 4
@@ -45,6 +50,7 @@ SERVO_EVENTS = (
     'open_loop',
     'roi_mode',
     'full_frame_mode',
+    'reset_zpd',
 )
 
 NEXLINE_EVENTS = (
@@ -61,3 +67,4 @@ CALIBRATION_LASER_WAVELENGTH = 1550 # nm
 LASER_ANGLE = 25 # angle of the laser in degrees
 NEXLINE_CHANNEL = 1
 NEXLINE_STEP_SIZE = 5 # um in mechanical path difference
+NEXLINE_TIMEOUT = 300 # s

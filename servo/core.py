@@ -81,15 +81,20 @@ class SharedData(object):
         self.add_array('IRCamera.angles', np.zeros(4, dtype=config.FRAME_DTYPE), stored=True)
         self.add_array('IRCamera.last_angles', np.zeros(4, dtype=config.FRAME_DTYPE), stored=True)
         self.add_array('IRCamera.opds', np.zeros(4, dtype=config.FRAME_DTYPE), stored=True)
-        self.add_value('IRCamera.mean_opd', float(np.nan))
+        self.add_value('IRCamera.mean_opd', float(0.))
+        self.add_value('IRCamera.mean_opd_offset', float(0.), stored=True)
         
         self.add_array('IRCamera.mean_opd_buffer', np.full(
             config.BUFFER_SIZE, np.nan, dtype=config.FRAME_DTYPE))
         
         self.add_value('IRCamera.median_sampling_time', float(np.nan))
         self.add_value('IRCamera.lost_frames', int(0))
+        self.add_value('IRCamera.state', float(0), stored=False)
 
+        
         # selected pixels: 0:none, 1:side, 2:center
+        self.add_value('Servo.state', float(0), stored=False)
+        
         self.add_array('Servo.pixels_x', np.zeros(config.FULL_FRAME_SHAPE[0],
                                                   dtype=int), stored=True)
         self.add_array('Servo.pixels_y', np.zeros(config.FULL_FRAME_SHAPE[1],
@@ -116,6 +121,7 @@ class SharedData(object):
 
         
         self.add_value('Servo.opd_target', float(np.nan), stored=True)
+        
         self.add_array('Servo.PID', np.array(config.DEFAULT_PID).astype(config.FRAME_DTYPE),
                        stored=True)
         
@@ -126,6 +132,9 @@ class SharedData(object):
         self.add_array('DAQ.piezos_level_actual',
                        np.zeros(3, dtype=config.DAQ_PIEZO_LEVELS_DTYPE),
                        stored=True)
+        self.add_value('DAQ.state', float(0), stored=False)
+
+        self.add_value('Nexline.state', float(0), stored=False)
 
 
     def add_array(self, name, array, stored=False):

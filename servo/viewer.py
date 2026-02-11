@@ -15,6 +15,7 @@ from collections import deque
 from . import core
 from . import config
 from . import utils
+from .fsm import ServoState, NexlineState
 
 log = logging.getLogger(__name__)
 
@@ -233,9 +234,13 @@ class Viewer(core.Worker):
         self.tab_config = ttk.Frame(self.notebook)
         self.notebook.add(self.tab_config, text="Config")
 
-        # --- Buffers tab ---------------------------------------------------------
+        # Buffers tab
         self.tab_buffers = ttk.Frame(self.notebook)
         self.notebook.add(self.tab_buffers, text="Buffers")
+
+        # debug tab
+        self.tab_debug = ttk.Frame(self.notebook)
+        self.notebook.add(self.tab_debug, text="Debug")
         
         # Construction de l'onglet (figures + canvases + lignes)
         self._build_buffers_tab()
@@ -291,7 +296,32 @@ class Viewer(core.Worker):
         ttk.Button(pid_frame, text="Apply", command=self._apply_pid).grid(
             row=1, column=3, sticky="w", padx=(0, 0)
         )
-        
+
+
+        # ====================== Debug tab content =============================== 
+        debug_wrap = ttk.Frame(self.tab_debug)
+        debug_wrap.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+        states_frame = ttk.LabelFrame(debug_wrap, text="States", padding=10)               
+        states_frame.pack(side="top", anchor="nw", fill="x")
+
+        self.state_servo = tk.IntVar(value=self.data['Servo.state'][0])
+        self.state_nexline = tk.IntVar(value=self.data['Nexline.state'][0])
+        self.state_ircam = tk.IntVar(value=self.data['IRCamera.state'][0])
+        self.state_daq = tk.IntVar(value=self.data['DAQ.state'][0])
+
+        # Layout: labels + entries in a row (grid is clean here)
+        for col, (label, var, key) in enumerate((
+                ("Servo", self.state_servo, 'Servo.state'),
+                ("Nexline", self.state_nexline, 'Nexline.state'),
+                ("IRCamera", self.state_ircam, 'IRCamera.state'),
+                ("DAQ", self.state_daq, 'DAQ.state'))):
+            ttk.Label(states_frame, text=label).grid(row=0, column=col, sticky="w",
+                                                     padx=(0, 8), pady=(0, 4))
+            e = ttk.Label(states_frame, textvariable=var, width=10)
+            e.grid(row=1, column=col, sticky="w", padx=(0, 16), pady=(0, 6))
+
+
         # ------------------------------------------------------------------
         # Image info
         # ------------------------------------------------------------------
@@ -542,6 +572,10 @@ class Viewer(core.Worker):
                                        command=self.toggle_roi_mode)
         self.roi_mode_btn.pack(side=tk.RIGHT, padx=10)
         self._roi_mode = False
+
+        self.reset_zpd_btn = ttk.Button(toolbar, text="Reset ZPD",
+                                      command=self.reset_zpd)
+        self.reset_zpd_btn.pack(side=tk.RIGHT, padx=10)
 
         # ------------------------------------------------------------------
         # Info panel
@@ -1009,27 +1043,27 @@ class Viewer(core.Worker):
         if self._close_loop:
             self._close_loop = False
             self.close_loop_btn.config(text="CLOSE LOOP")
-            self._set_event('open_loop')
+            self._set_event('Servo.open_loop')
         else:
             self._close_loop = True
             self.close_loop_btn.config(text="OPEN LOOP")
-            self._set_event('close_loop')
+            self._set_event('Servo.close_loop')
 
     def toggle_roi_mode(self):
         if self._roi_mode:
             self._roi_mode = False
             self.roi_mode_btn.config(text="ROI MODE")
-            self._set_event('full_frame_mode')
+            self._set_event('Servo.full_frame_mode')
         else:
             self._roi_mode = True
             self.roi_mode_btn.config(text="FF MODE")
-            self._set_event('roi_mode')
+            self._set_event('Servo.roi_mode')
 
     # ----------------------------------------------------------------------
     # MOVE TO OPD
     # ----------------------------------------------------------------------
     def move_to_opd(self):
-        self._set_event('move_to_opd')
+        self._set_event('Servo.move_to_opd')
         
     # ----------------------------------------------------------------------
     # WINDOW GEOMETRY SAVE/RESTORE
@@ -1117,6 +1151,15 @@ class Viewer(core.Worker):
             pass
 
     def update_status(self):
+        try: self.state_servo.set(ServoState(self.data['Servo.state'][0]).name)
+        except Exception: pass        
+        try: self.state_nexline.set(NexlineState(self.data['Nexline.state'][0]).name)
+        except Exception: pass
+        try: self.state_ircam.set(self.data['IRCamera.state'][0])
+        except Exception: pass
+        try: self.state_daq.set(self.data['DAQ.state'][0])
+        except Exception: pass
+        
         mean_opd = self.data['IRCamera.mean_opd'][0]
         std_opd = self.opd_std_buf[0] if self.opd_std_buf else np.nan
         
@@ -1126,9 +1169,10 @@ class Viewer(core.Worker):
         status_str_list = (f"mean OPD: {mean_opd:.0f} nm",
                            f" (std): {std_opd:.1f} nm",
                            f"fps: {fps/1e3:.3f} kHz",
-                           f"frame drops: {drops}")
+                           f"frame drops: {drops}/{config.IRCAM_BUFFER_SIZE}")
         
         self.status_var.set('\n'.join(status_str_list))
+        
         
     # ----------------------------------------------------------------------
     # PERIODIC REFRESH (MAIN IMAGE UPDATE LOOP)
@@ -1185,7 +1229,7 @@ class Viewer(core.Worker):
             log.error(f'error at rendering: {traceback.format_exc()}')
 
         
-        # Update profiles
+        # Update profiles and all
         try:
             self.update_profiles()
             self.update_status()
@@ -1274,17 +1318,18 @@ class Viewer(core.Worker):
             levels_center = get_levels(1)
             levels_left = get_levels(0)
             levels_right = get_levels(2)
+
+            n = min(config.VIEWER_ELLIPSE_DRAW_BUFFER_SIZE, len(levels_center))
             
             ax.scatter(levels_center[0], levels_left[0], color="tab:blue")
             ax.scatter(levels_center[0], levels_right[0], color="tab:orange")
-            ax.scatter(levels_center, levels_left, color="tab:blue", alpha=0.2)
-            ax.scatter(levels_center, levels_right, color="tab:orange", alpha=0.2)
+            ax.scatter(levels_center[:n], levels_left[:n], color="tab:blue", alpha=0.2)
+            ax.scatter(levels_center[:n], levels_right[:n], color="tab:orange", alpha=0.2)
             
             #ax.set_title(title)
             ax.set_xlim(-0.1, 1.1)
             ax.set_ylim(-0.1, 1.1)
 
-            # Style compact pour rester cohérent avec tes profils
             ax.set_xticks([])
             ax.set_yticks([])
             for s in ax.spines.values():
@@ -1478,6 +1523,7 @@ class Viewer(core.Worker):
                 ymax += eps
             pad = (ymax - ymin) * pad_ratio
             ax.set_ylim(ymin - pad, ymax + pad)
+    
 
 
     def _update_buffers_tab(self):
@@ -1485,6 +1531,10 @@ class Viewer(core.Worker):
         Met à jour les 3 graphes de l'onglet 'Buffers'.
         Appelée depuis refresh() pour rester synchrone au frame_update.
         """
+        def _set_data(line, x, y):
+            size = min(len(x), len(y))
+            line.set_data(x[:size], y[:size])
+    
         now = time.perf_counter()
         if now - self._buffers_last_draw < 0.1: 
             return
@@ -1493,13 +1543,13 @@ class Viewer(core.Worker):
         xtime_long = np.array(self.time_longbuf)
         # --- mean_opd
         y_mean = self._np_buffer(self.opd_mean_buf)
-        self.line_mean.set_data(xtime, y_mean)
+        _set_data(self.line_mean, xtime, y_mean)
         self._autoscale_1d(self.ax_mean, xtime, y_mean)
         self.canvas_mean.draw_idle()
 
         # --- std_opd
         y_std = self._np_buffer(self.opd_std_buf)
-        self.line_std.set_data(xtime, y_std)
+        _set_data(self.line_std, xtime, y_std)
         
         #y_std_long = self._np_buffer(self.opd_std_longbuf)
         #x_std_long = np.arange(len(y_std_long), dtype=float)
@@ -1515,9 +1565,9 @@ class Viewer(core.Worker):
         y_pz_da2 = self._np_buffer(self.piezo_da2_buf)
         n_pz = max(len(y_pz_opd), len(y_pz_da1), len(y_pz_da2))
 
-        self.line_pz_opd.set_data(xtime, y_pz_opd)
-        self.line_pz_da1.set_data(xtime, y_pz_da1)
-        self.line_pz_da2.set_data(xtime, y_pz_da2)
+        _set_data(self.line_pz_opd, xtime, y_pz_opd)
+        _set_data(self.line_pz_da1, xtime, y_pz_da1)
+        _set_data(self.line_pz_da2, xtime, y_pz_da2)
 
         # autoscale en tenant compte des NaN et en incluant 0 V
         self._autoscale_1d(self.ax_pz, xtime, None)
@@ -1589,5 +1639,7 @@ class Viewer(core.Worker):
     def normalize(self):
         self._set_event('Servo.normalize')
 
+    def reset_zpd(self):
+        self._set_event('Servo.reset_zpd')
         
 

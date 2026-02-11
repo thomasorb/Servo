@@ -15,7 +15,7 @@ from . import utils
 from . import pid
 from . import nexline
 
-from .fsm import StateMachine, FsmEvent, FsmState, Transition
+from .fsm import StateMachine, Transition, ServoState, ServoEvent, NexlineState
 
 
 log = logging.getLogger(__name__)
@@ -63,6 +63,8 @@ def worker_process(queue, data, WorkerClass, events, priority=None, kwargs=None)
 
         log.info("Worker terminated cleanly")
 
+
+
 class Servo(StateMachine):
     def __init__(self, mode='calib', noviewer=False, nocam=False):
         self.mode = mode
@@ -70,28 +72,27 @@ class Servo(StateMachine):
         self.nocam = nocam
         
         table = {
-            (FsmState.IDLE,    FsmEvent.START): Transition(
-                FsmState.RUNNING, action=self._start),
-            (FsmState.RUNNING, FsmEvent.NORMALIZE): Transition(
-                FsmState.RUNNING, action=self._normalize),
-            (FsmState.RUNNING, FsmEvent.ERROR): Transition(FsmState.FAILED),
-            (FsmState.RUNNING, FsmEvent.STOP): Transition(
-                FsmState.STOPPED, action=self._stop),
-            (FsmState.RUNNING, FsmEvent.MOVE_TO_OPD): Transition(
-                FsmState.RUNNING, action=self._move_to_opd),
-            (FsmState.RUNNING, FsmEvent.CLOSE_LOOP): Transition(
-                FsmState.STAY_AT_OPD, action=self._close_loop),         
-            (FsmState.STAY_AT_OPD, FsmEvent.OPEN_LOOP): Transition(
-                FsmState.RUNNING, action=self._open_loop),          
-            (FsmState.FAILED,  FsmEvent.RESET): Transition(FsmState.IDLE),
-            (FsmState.STOPPED, FsmEvent.RESET): Transition(FsmState.IDLE),
-            (FsmState.RUNNING, FsmEvent.ROI_MODE): Transition(
-                FsmState.RUNNING, action=self._roi_mode),
-            (FsmState.RUNNING, FsmEvent.FULL_FRAME_MODE): Transition(
-                FsmState.RUNNING, action=self._full_frame_mode),
+            (ServoState.IDLE, ServoEvent.START): Transition(
+                ServoState.RUNNING, action=self._start),
+            (ServoState.RUNNING, ServoEvent.NORMALIZE): Transition(
+                ServoState.RUNNING, action=self._normalize),
+            (ServoState.RUNNING, ServoEvent.STOP): Transition(
+                ServoState.STOPPED, action=self._stop),
+            (ServoState.RUNNING, ServoEvent.MOVE_TO_OPD): Transition(
+                ServoState.RUNNING, action=self._move_to_opd),
+            (ServoState.RUNNING, ServoEvent.CLOSE_LOOP): Transition(
+                ServoState.STAY_AT_OPD, action=self._close_loop),         
+            (ServoState.STAY_AT_OPD, ServoEvent.OPEN_LOOP): Transition(
+                ServoState.RUNNING, action=self._open_loop),          
+            (ServoState.RUNNING, ServoEvent.ROI_MODE): Transition(
+                ServoState.RUNNING, action=self._roi_mode),
+            (ServoState.RUNNING, ServoEvent.FULL_FRAME_MODE): Transition(
+                ServoState.RUNNING, action=self._full_frame_mode),
+            (ServoState.RUNNING, ServoEvent.RESET_ZPD): Transition(
+                ServoState.RUNNING, action=self._reset_zpd),
             
         }
-        super().__init__(FsmState.IDLE, table)
+        super().__init__(ServoState.IDLE, table)
 
         self.event_manager = multiprocessing.Manager()
         self.events = self.event_manager.dict()
@@ -114,7 +115,7 @@ class Servo(StateMachine):
         for iname in config.SERVO_EVENTS:
             if evs.get('Servo.' + iname) and evs['Servo.' + iname].is_set():
                 evs['Servo.' + iname].clear()
-                self.dispatch(getattr(FsmEvent, iname.upper()), payload=None)
+                self.dispatch(getattr(ServoEvent, iname.upper()), payload=None)
 
     # Hooks (facultatif)
     def on_enter_running(self, _):
@@ -124,7 +125,7 @@ class Servo(StateMachine):
             try:
                 self.poll()
                 
-                if self.state is FsmState.STOPPED:
+                if self.state is ServoState.STOPPED:
                     break
                 time.sleep(0.1)
             except KeyboardInterrupt:
@@ -208,7 +209,6 @@ class Servo(StateMachine):
         ## start all threads
         self.workers = list()
 
-
         # start ir camera
         if not self.nocam:
             self.start_worker(ircam.IRCamera, -20)
@@ -228,6 +228,12 @@ class Servo(StateMachine):
             self.start_worker(viewer.Viewer, 10)
 
 
+    def _publish_state(self, state=None):
+        super()._publish_state(state=state)
+        try:
+            self.data['Servo.state'][0] = float(state.value)
+        except Exception: pass
+        
     def _normalize(self, _):
         log.info("Normalizing")
         
@@ -305,17 +311,35 @@ class Servo(StateMachine):
         np.save('vprofiles.npy', np.array(rec_vprofiles))
         np.save('rois.npy', np.array(rec_rois))
 
-                
+    def _reset_zpd(self, _):
+        log.info("ZPD Reset")
+        self.data['IRCamera.angles'][:4] = np.zeros(4, dtype=config.FRAME_DTYPE)
+        self.data['IRCamera.last_angles'][:4] = np.zeros(4, dtype=config.FRAME_DTYPE)
+        self.data['IRCamera.mean_opd_offset'][0] = self.data['IRCamera.mean_opd'][0]
+        
+        
     def _move_to_opd(self, _):
         log.info("Moving to OPD")
-
-        self.events['Nexline.move'].set()
-
 
         opd_target = self.data['Servo.opd_target'][0]
         
         log.info(f"   OPD target: {opd_target} nm")
+        log.info('moving with Nexline')
         
+        self.events['Nexline.move'].set()
+        
+        time.sleep(0.3) # wait for event dispatch
+        while True:
+            if NexlineState(self.data['Nexline.state']).name != 'MOVING':
+                break
+            time.sleep(0.1)
+
+        opd_diff = np.abs(self.data['Servo.opd_target'][0] - self.data['IRCamera.mean_opd'][0])
+        if  opd_diff > config.PIEZO_MAX_OPD_DIFF:
+            log.error(f'opd difference too large for piezo reach: {opd_diff}')
+            return
+        log.info('moving with piezos')
+            
         dt = config.OPD_LOOP_TIME  # 1 kHz loop (adjust to your hardware timing)
 
         while True:

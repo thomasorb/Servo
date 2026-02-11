@@ -167,7 +167,7 @@ class DataObserver(NITLibrary.NITUserObserver):
         self.frame_position = frame_position
         self.frame_shape = frame_shape
         self.frame_size = int(np.prod(self.frame_shape))
-        self.times = np.full(1000, np.nan, dtype=float)
+        self.times = np.full(config.IRCAM_BUFFER_SIZE, np.nan, dtype=float)
         self.ids = np.full_like(self.times, np.nan)
         self.last_viewer_out_time = 0
         self.last_servo_out_time = 0
@@ -195,7 +195,7 @@ class DataObserver(NITLibrary.NITUserObserver):
                     (np.nanmax(self.times) - np.nanmin(self.times)) / np.sum(
                         ~np.isnan(self.times)))
                 self.data['IRCamera.median_sampling_time'][0] = mean_sampling_time
-                self.data['IRCamera.lost_frames'][0] = int(np.sum(diff_ids != 1) - 1)
+                self.data['IRCamera.lost_frames'][0] = int(np.sum(diff_ids > 1))
                 self.times.fill(np.nan)
                 self.ids.fill(np.nan)
 
@@ -294,7 +294,8 @@ class DataObserver(NITLibrary.NITUserObserver):
                     self.data['IRCamera.vprofile_levels'][:3] = vlevels
 
                 # compute angles and opd
-                last_angles = np.ascontiguousarray(self.data['IRCamera.last_angles'][:4], dtype=config.DATA_DTYPE)
+                last_angles = np.ascontiguousarray(self.data['IRCamera.last_angles'][:4],
+                                                   dtype=config.DATA_DTYPE)
                 angles = np.ascontiguousarray(np.empty_like(last_angles))
 
                 if compute_servo_output:
@@ -310,6 +311,8 @@ class DataObserver(NITLibrary.NITUserObserver):
                 angles[2:] = utils.compute_angles(
                     vlevels, self.vellipse_norm_coeffs, last_angles[2:])
                 opds = utils.compute_opds(angles)
+
+                opds -= self.data['IRCamera.mean_opd_offset']
 
                 mean_opd = utils.mean(opds)
                 

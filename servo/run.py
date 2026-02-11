@@ -1,9 +1,7 @@
 import logging
 import psutil
 
-from .servo import Servo
-from . import fsm
-
+from .servo import Servo, ServoEvent
 log = logging.getLogger(__name__)
     
     
@@ -17,7 +15,7 @@ def run(**kwargs):
     servo = Servo(**kwargs)
 
     # start servo
-    servo.dispatch(fsm.FsmEvent.START)
+    servo.dispatch(ServoEvent.START)
     
         
 

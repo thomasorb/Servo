@@ -8,22 +8,10 @@ import pipython.pitools
 
 from . import config
 from . import core
-from .fsm import StateMachine, FsmEvent, FsmState, Transition
+from .fsm import StateMachine, Transition, NexlineState, NexlineEvent
 
 log = logging.getLogger(__name__)
 
-class NexlineEvent(Enum):
-    START = auto()
-    STOP = auto()
-    MOVE = auto()
-    ERROR = auto()
-    RESET = auto()
-
-class NexlineState(Enum):
-    IDLE = auto()
-    RUNNING = auto()
-    STOPPED = auto()
-    FAILED = auto()
 
 class NexModes(IntEnum):
     FULL_STEP = 0
@@ -37,13 +25,12 @@ class Nexline(core.Worker, StateMachine):
         table = {
             (NexlineState.IDLE,    NexlineEvent.START): Transition(
                 NexlineState.RUNNING, action=self._start),
-            (NexlineState.RUNNING, NexlineEvent.ERROR): Transition(NexlineState.FAILED),
             (NexlineState.RUNNING, NexlineEvent.STOP): Transition(
                 NexlineState.STOPPED, action=self._stop),
             (NexlineState.RUNNING, NexlineEvent.MOVE): Transition(
-                NexlineState.RUNNING, action=self._move),
-            (NexlineState.FAILED,  NexlineEvent.RESET): Transition(NexlineState.IDLE),
-            (NexlineState.STOPPED, NexlineEvent.RESET): Transition(NexlineState.IDLE),            
+                NexlineState.MOVING, action=self._move),
+            (NexlineState.MOVING, NexlineEvent.STOP_MOVING): Transition(
+                NexlineState.RUNNING, action=self._stop_moving),
         }
 
         core.Worker.__init__(self, data, events)
@@ -92,6 +79,12 @@ class Nexline(core.Worker, StateMachine):
         
     def on_exit_running(self, _):
         log.info("<< RUNNING")
+
+    def _publish_state(self, state=None):
+        super()._publish_state(state=state)
+        try:
+            self.data['Nexline.state'][0] = float(state.value)
+        except Exception: pass
 
     def to_opd(self, mpd):
         """convert mpd to opd"""
@@ -176,30 +169,63 @@ class Nexline(core.Worker, StateMachine):
             log.error(f'error setting driving mode: {e}')
 
     def _move(self, _):
+        pass
+    
+    def on_enter_moving(self, _):
+        log.info('centering OPD piezo')
+        
+        self.data['DAQ.piezos_level'][0] = 5
+        while True:
+            if np.abs(self.data['DAQ.piezos_level_actual'][0] - 5) < 0.1:
+                break
+                      
         log.info('Moving Nexline')
+        self.set_velocity(50)
 
-    def move(self, opd, relax=False):
-        """optical path difference in nm
+        opd = self.data['Servo.opd_target'][0] - self.data['IRCamera.mean_opd'][0]
         
-        relax: relax Nexline after move. Unsuitable for precise measurment of the nexline movement.
-        """
+        if not np.isnan(opd):        
+            velocity = self.get_velocity() # um/s
 
-        velocity = self.get_velocity() # um/s
-        #step_size = self.pidevice.qSSA(config.NEXLINE_CHANNEL)[config.NEXLINE_CHANNEL] #um
-        step_nb = self.to_mpd(opd) / 1e3 / config.NEXLINE_STEP_SIZE
+            step_nb = self.to_mpd(opd) / 1e3 / config.NEXLINE_STEP_SIZE
 
- 
-        log.info(f'moving at {velocity} um/s with a step size of {self.to_opd(config.NEXLINE_STEP_SIZE)} for {opd} nm ({step_nb} steps) (optical)')
-        #return
-        self.print_pos()
+            log.info(f'moving at {velocity} um/s with a step size of {self.to_opd(config.NEXLINE_STEP_SIZE)} for {opd} nm ({step_nb} steps) (optical)')
+            #return
+            self.print_pos()
+
+            log.info(f'{self.pidevice.qSSA(config.NEXLINE_CHANNEL)}')
+            startt = time.time()
+            self.pidevice.OSM(config.NEXLINE_CHANNEL, step_nb)
+
+            while True:
+                if not self.pidevice.qOSN(config.NEXLINE_CHANNEL)[1]:
+                    break
+                    
+                if self.events['Servo.stop'].is_set():
+                    try:
+                        self.pidevice.HLT(config.NEXLINE_CHANNEL)
+                        pipython.pitools.stopall(self.pidevice)
+                    except Exception as e:
+                        log.error(f'Exception at Nexline halt: {e}')
+                    log.error('Nexline halted')
+                    break
+                
+                if (time.time() - startt) > config.NEXLINE_TIMEOUT:
+                    log.error('Nexline move timeout')
+                    break
+            
+            self.print_pos()
+            log.info(f'finished stepping in {time.time() - startt} s')
+        else:
+            log.error(f'bad relative opd: {opd}')
+
+        self.dispatch(NexlineEvent.STOP_MOVING)
+
+    def _stop_moving(self, _):
+        log.info('Nexline move stopping')
+        #self.pidevice.RNP(config.NEXLINE_CHANNEL, 0)
+
+
         
-        log.info(f'{self.pidevice.qSSA(config.NEXLINE_CHANNEL)}')
-        startt = time.time()
-        self.pidevice.OSM(config.NEXLINE_CHANNEL, step_nb)
-        pipython.pitools.waitonwalk(self.pidevice, config.NEXLINE_CHANNEL)
-        self.print_pos()
-        if relax:
-            self.pidevice.RNP(config.NEXLINE_CHANNEL, 0)
-        log.info(f'finished stepping in {time.time() - startt} s')
 
     
