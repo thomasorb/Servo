@@ -132,7 +132,6 @@ class Servo(StateMachine):
                 log.error('Keyboard interrupt')
                 self.events('Servo.stop').set()
                 
-
         
     def on_exit_running(self, _):
         log.info("<< RUNNING")
@@ -148,20 +147,15 @@ class Servo(StateMachine):
 
         while True:
             try:
-                pid_coeffs = self.data['Servo.PID'][:3]
-
-                pid_control = pid.PID(
-                    pid.PIDConfig(
-                        kp=pid_coeffs[0],
-                        ki=pid_coeffs[1],
-                        kd=pid_coeffs[2],
-                        dt=dt,
-                        out_min=config.PIEZO_V_MIN,
-                        out_max=config.PIEZO_V_MAX,
-                        deriv_filter_hz=1/dt/1000., kaw=5.0, deadband=0.0
-                    ))
+                pid_opd_control = self.get_pid_control('OPD')
+                pid_da_control = self.get_pid_control('DA')
 
                 opd = np.mean(self.data['IRCamera.mean_opd_buffer'][:10])
+
+                tip = np.mean(self.data['IRCamera.hprofile_angle_diff_buffer'][:100])
+
+                tilt = np.mean(self.data['IRCamera.vprofile_angle_diff_buffer'][:100])
+                
                 if not np.isnan(opd):
 
                     self.data['DAQ.piezos_level'][0] = pid_control.update(
@@ -256,6 +250,8 @@ class Servo(StateMachine):
                 val, dtype=config.DAQ_PIEZO_LEVELS_DTYPE)
 
             while True:
+                self.poll()
+
                 if self.data['DAQ.piezos_level_actual'][0] == val:
                     break
                 if self.events['Servo.stop'].is_set():
@@ -344,28 +340,18 @@ class Servo(StateMachine):
 
         while True:
 
-            pid_coeffs = self.data['Servo.PID'][:3]
-            
-            pid_control = pid.PID(
-                pid.PIDConfig(
-                    kp=pid_coeffs[0],
-                    ki=pid_coeffs[1],
-                    kd=pid_coeffs[2],
-                    dt=dt,
-                    out_min=config.PIEZO_V_MIN,
-                    out_max=config.PIEZO_V_MAX,
-                    deriv_filter_hz=1/dt/1000., kaw=5.0, deadband=0.0
-                ))
-
+            pid_opd_control = self.get_pid_control('OPD')
             
             opd = np.mean(self.data['IRCamera.mean_opd_buffer'][:10])
             if not np.isnan(opd):
             
-                self.data['DAQ.piezos_level'][0] = pid_control.update(
+                self.data['DAQ.piezos_level'][0] = pid_opd_control.update(
                     control=self.data['DAQ.piezos_level'][0],
                     setpoint=opd_target,
                     measurement=opd)
-                
+
+            self.poll()
+
             if np.abs(opd - opd_target) < config.OPD_TOLERANCE:
                 log.info(f"OPD target reached: {opd} nm")
                 break
@@ -377,6 +363,22 @@ class Servo(StateMachine):
 
 
         log.info(f"OPD piezo at {opd}")
+
+    def get_pid_control(self, name):
+        pid_coeffs = self.data[f'Servo.PID_{name}'][:3]
+        
+        pid_control = pid.PID(
+            pid.PIDConfig(
+                kp=pid_coeffs[0],
+                ki=pid_coeffs[1],
+                kd=pid_coeffs[2],
+                dt=dt,
+                out_min=config.PIEZO_V_MIN,
+                out_max=config.PIEZO_V_MAX,
+                deriv_filter_hz=1/dt/1000., kaw=5.0, deadband=0.0
+            ))
+        return pid_control
+
 
     def _close_loop(self, _):
         log.info("Closing loop on target OPD")

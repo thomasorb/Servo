@@ -200,7 +200,9 @@ class Nexline(core.Worker, StateMachine):
             while True:
                 if not self.pidevice.qOSN(config.NEXLINE_CHANNEL)[1]:
                     break
-                    
+
+                self.poll()
+
                 if self.events['Servo.stop'].is_set():
                     try:
                         self.pidevice.HLT(config.NEXLINE_CHANNEL)
