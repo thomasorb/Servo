@@ -14,6 +14,7 @@ from . import config
 from . import utils
 from . import pid
 from . import nexline
+from . import com
 
 from .fsm import StateMachine, Transition, ServoState, ServoEvent, NexlineState
 
@@ -245,6 +246,14 @@ class Servo(StateMachine):
         # start piezos
         self.start_worker(piezo.DAQ, 0)
 
+        # start com
+        self.start_worker(
+            com.SerialComm, 0,
+            port=config.SERIAL_PORT,
+            baudrate=config.SERIAL_BAUDRATE,
+            status_rate_hz=config.SERIAL_STATUS_RATE,
+        )
+        
         # start viewer
         if not self.noviewer:
             if not self.nocam:
