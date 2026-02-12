@@ -29,7 +29,7 @@ PIEZO_V_MAX = 10.0
 OPD_TOLERANCE = 5.0  # nm
 PIEZO_MAX_OPD_DIFF = 5000 # nm
 
-BUFFER_SIZE = 100 # for servo values buffering
+SERVO_BUFFER_SIZE = 20 # for servo values buffering
 VIEWER_BUFFER_SIZE = 1000 # for viewer servo values buffering
 
 VIEWER_ELLIPSE_DRAW_BUFFER_SIZE = 100
@@ -38,7 +38,9 @@ DEFAULT_PROFILE_LEN = MIN_ROI_SHAPE
 DEFAULT_PROFILE_WIDTH = 4
 DEFAULT_PROFILE_POSITION = np.array((DEFAULT_PROFILE_LEN//2, DEFAULT_PROFILE_LEN//2), dtype=int)
 
-DEFAULT_PID = [1e-4, 5e-4, 1.0]
+DEFAULT_PID_OPD = [1e-4, 5e-4, 1.0]
+DEFAULT_PID_DA = [-1e-1, 1e-4, 1.0]
+
 
 SERVO_EVENTS = (
     'normalize',

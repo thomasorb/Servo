@@ -178,9 +178,9 @@ class DataObserver(NITLibrary.NITUserObserver):
         self.ypixels_list = None
         self.xpixels_list_pos = None
         self.ypixels_list_pos = None
-        self.opd_deque = collections.deque(maxlen=config.BUFFER_SIZE)
-        self.tip_deque = collections.deque(maxlen=config.BUFFER_SIZE)
-        self.tilt_deque = collections.deque(maxlen=config.BUFFER_SIZE)
+        self.opd_deque = collections.deque(maxlen=config.SERVO_BUFFER_SIZE)
+        self.tip_deque = collections.deque(maxlen=config.SERVO_BUFFER_SIZE)
+        self.tilt_deque = collections.deque(maxlen=config.SERVO_BUFFER_SIZE)
         
     def onNewFrame(self, frame):
         try:
@@ -325,22 +325,22 @@ class DataObserver(NITLibrary.NITUserObserver):
 
                     self.opd_deque.appendleft(float(mean_opd))
                     self.data['IRCamera.mean_opd_buffer'][:min(
-                        len(self.opd_deque), config.BUFFER_SIZE)] = np.array(
+                        len(self.opd_deque), config.SERVO_BUFFER_SIZE)] = np.array(
                             self.opd_deque, dtype=config.FRAME_DTYPE)
 
                     tip = angles[1] - angles[0]
                     tilt = angles[3] - angles[2]
-                    self.data['IRCamera.hprofile_angle_diff'][0] = tip
-                    self.data['IRCamera.vprofile_angle_diff'][0] = tilt
+                    self.data['IRCamera.tip'][0] = tip
+                    self.data['IRCamera.tilt'][0] = tilt
 
                     self.tip_deque.appendleft(float(tip))
-                    self.data['IRCamera.hprofile_angle_diff_buffer'][:min(
-                        len(self.tip_deque), config.BUFFER_SIZE)] = np.array(
+                    self.data['IRCamera.tip_buffer'][:min(
+                        len(self.tip_deque), config.SERVO_BUFFER_SIZE)] = np.array(
                             self.tip_deque, dtype=config.FRAME_DTYPE)
 
                     self.tilt_deque.appendleft(float(tilt))
-                    self.data['IRCamera.vprofile_angle_diff_buffer'][:min(
-                        len(self.tilt_deque), config.BUFFER_SIZE)] = np.array(
+                    self.data['IRCamera.tilt_buffer'][:min(
+                        len(self.tilt_deque), config.SERVO_BUFFER_SIZE)] = np.array(
                             self.tilt_deque, dtype=config.FRAME_DTYPE)
 
                 self.data['IRCamera.last_angles'][:4] = angles

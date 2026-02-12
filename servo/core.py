@@ -83,19 +83,17 @@ class SharedData(object):
         self.add_array('IRCamera.opds', np.zeros(4, dtype=config.FRAME_DTYPE), stored=True)
         self.add_value('IRCamera.mean_opd', float(0.))
         self.add_value('IRCamera.mean_opd_offset', float(0.), stored=True)
-        self.add_value('IRCamera.hprofile_angle_diff', float(0.), stored=True)
-        self.add_value('IRCamera.vprofile_angle_diff', float(0.), stored=True)
-        self.add_value('IRCamera.hprofile_target_angle_diff', float(0.), stored=True)
-        self.add_value('IRCamera.vprofile_target_angle_diff', float(0.), stored=True)
-        
+        self.add_value('IRCamera.tip', float(0.), stored=True)
+        self.add_value('IRCamera.tilt', float(0.), stored=True)
+                
         self.add_array('IRCamera.mean_opd_buffer', np.full(
-            config.BUFFER_SIZE, np.nan, dtype=config.FRAME_DTYPE))
+            config.SERVO_BUFFER_SIZE, np.nan, dtype=config.FRAME_DTYPE))
 
-        self.add_array('IRCamera.hprofile_angle_diff_buffer', np.full(
-            config.BUFFER_SIZE, np.nan, dtype=config.FRAME_DTYPE))
+        self.add_array('IRCamera.tip_buffer', np.full(
+            config.SERVO_BUFFER_SIZE, np.nan, dtype=config.FRAME_DTYPE))
 
-        self.add_array('IRCamera.vprofile_angle_diff_buffer', np.full(
-            config.BUFFER_SIZE, np.nan, dtype=config.FRAME_DTYPE))
+        self.add_array('IRCamera.tilt_buffer', np.full(
+            config.SERVO_BUFFER_SIZE, np.nan, dtype=config.FRAME_DTYPE))
         
         self.add_value('IRCamera.median_sampling_time', float(np.nan))
         self.add_value('IRCamera.lost_frames', int(0))
@@ -131,11 +129,14 @@ class SharedData(object):
 
         
         self.add_value('Servo.opd_target', float(np.nan), stored=True)
+        self.add_value('Servo.tip_target', float(0.), stored=True)
+        self.add_value('Servo.tilt_target', float(0.), stored=True)
+
         
-        self.add_array('Servo.PID_OPD', np.array(config.DEFAULT_PID).astype(config.FRAME_DTYPE),
+        self.add_array('Servo.PID_OPD', np.array(config.DEFAULT_PID_OPD).astype(config.DATA_DTYPE),
                        stored=True)
 
-        self.add_array('Servo.PID_DA', np.array(config.DEFAULT_PID).astype(config.FRAME_DTYPE),
+        self.add_array('Servo.PID_DA', np.array(config.DEFAULT_PID_DA).astype(config.DATA_DTYPE),
                        stored=True)
         
         self.add_array('DAQ.piezos_level',
