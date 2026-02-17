@@ -14,7 +14,7 @@ from collections import deque
 from . import core
 from . import config
 from . import utils
-from .fsm import ServoState, NexlineState
+from .fsm import ServoState, NexlineState, WorkerState
 log = logging.getLogger(__name__)
 import tkinter as tk
 from tkinter import ttk
@@ -213,6 +213,13 @@ class Viewer(core.Worker):
         style = ttk.Style(self.root)
         style.configure(".", font=("Noto Sans", 14))
         style.theme_use("clam")
+
+
+        style.map("State.TButton",
+                  background=[("disabled", "#bdc3c7"), ("active", "#27ae60"), ("!disabled", "#2ecc71")],
+                  foreground=[("disabled", "#7f8c8d"), ("!disabled", "white")])
+        #btn.state(["disabled"])  # pour désactiver
+        #btn.state(["!disabled"]) # pour réactiver
 
         # -----------------------------------------------------------------
         # Root layout: left = Notebook (tabs), right = persistent controls
@@ -429,12 +436,14 @@ class Viewer(core.Worker):
         self.state_nexline = tk.IntVar(value=self.data['Nexline.state'][0])
         self.state_ircam = tk.IntVar(value=self.data['IRCamera.state'][0])
         self.state_daq = tk.IntVar(value=self.data['DAQ.state'][0])
-
+        self.state_serialcomm = tk.IntVar(value=self.data['DAQ.state'][0])
+        
         for col, (label, var, key) in enumerate((
-            ("Servo", self.state_servo, 'Servo.state'),
-            ("Nexline", self.state_nexline, 'Nexline.state'),
-            ("IRCamera", self.state_ircam, 'IRCamera.state'),
-            ("DAQ", self.state_daq, 'DAQ.state'))):
+                ("Servo", self.state_servo, 'Servo.state'),
+                ("Nexline", self.state_nexline, 'Nexline.state'),
+                ("IRCamera", self.state_ircam, 'IRCamera.state'),
+                ("DAQ", self.state_daq, 'DAQ.state'),
+                ("SerialComm", self.state_serialcomm, 'SerialComm.state'),)):
             ttk.Label(states_frame, text=label).grid(row=0, column=col, sticky="w",
                                                      padx=(0, 8), pady=(0, 4))
             e = ttk.Label(states_frame, textvariable=var, width=10)
@@ -1142,9 +1151,11 @@ class Viewer(core.Worker):
         except Exception: pass
         try: self.state_nexline.set(NexlineState(self.data['Nexline.state'][0]).name)
         except Exception: pass
-        try: self.state_ircam.set(self.data['IRCamera.state'][0])
+        try: self.state_ircam.set(WorkerState(self.data['IRCamera.state'][0]).name)
         except Exception: pass
-        try: self.state_daq.set(self.data['DAQ.state'][0])
+        try: self.state_daq.set(WorkerState(self.data['DAQ.state'][0]).name)
+        except Exception: pass
+        try: self.state_serialcomm.set(WorkerState(self.data['SerialComm.state'][0]).name)
         except Exception: pass
 
         mean_opd = self.data['IRCamera.mean_opd'][0]

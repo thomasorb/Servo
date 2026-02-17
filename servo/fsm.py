@@ -41,6 +41,12 @@ class ServoState(IntEnum):
     STAY_AT_OPD = auto()
 
 
+class WorkerState(IntEnum):
+    IDLE = auto()
+    RUNNING = auto()
+    STOPPED = auto()
+
+
 @dataclass(frozen=True)
 class Transition:
     target: FsmState

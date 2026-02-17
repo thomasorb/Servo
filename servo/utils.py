@@ -457,3 +457,17 @@ def mean(a):
         b += a[i]
         
     return np.float32(b/n)
+
+@nb.njit(cache=True, fastmath=True)
+def copy_transpose_to_1d(src_2d, dst_1d):
+    """
+    Écrit src_2d.T aplati (ordre C) dans dst_1d sans allouer de temporaire.
+    Équivalent à dst_1d[:] = src_2d.T.ravel() mais sans créer l'intermédiaire.
+    """
+    nrows, ncols = src_2d.shape
+    k = 0
+    # Parcours colonne-par-colonne de src (équiv. à a.T.ravel(order='C'))
+    for c in range(ncols):
+        for r in range(nrows):
+            dst_1d[k] = src_2d[r, c]
+            k += 1

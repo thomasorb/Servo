@@ -5,6 +5,7 @@ from multiprocessing import shared_memory
 from . import config
 from . import state_store
 
+from .fsm import WorkerState
 
 log = logging.getLogger(__name__)
 
@@ -15,12 +16,17 @@ class Worker(object):
         self.data = data
         self.events = events
         self.stop_event = self.events[f"{self.__class__.__name__}.stop"]
-        self.running = True
+        self.set_state(WorkerState.IDLE)
 
-    
+
+    def set_state(self, state):
+        self.state = state
+        self.data[f"{self.__class__.__name__}.state"][:] = self.state.value
+        
     def run(self):
         """Main worker loop."""
-        while not self.stop_event.is_set() and self.running:
+        while not self.stop_event.is_set() and self.state != WorkerState.STOPPED:
+            self.set_state(WorkerState.RUNNING)
             self.loop_once()
         
     def cleanup(self):
@@ -29,7 +35,7 @@ class Worker(object):
 
     def stop(self):
         """Always called when shutting down."""
-        self.running = False
+        self.set_state(WorkerState.STOPPED)
         self.cleanup()
 
 
@@ -147,9 +153,9 @@ class SharedData(object):
                        np.zeros(3, dtype=config.DAQ_PIEZO_LEVELS_DTYPE),
                        stored=True)
         self.add_value('DAQ.state', float(0), stored=False)
-
         self.add_value('Nexline.state', float(0), stored=False)
-
+        self.add_value('SerialComm.state', float(0), stored=False)
+        self.add_value('Viewer.state', float(0), stored=False)
 
     def add_array(self, name, array, stored=False):
         if stored:

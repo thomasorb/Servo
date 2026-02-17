@@ -205,7 +205,7 @@ class DataObserver(NITLibrary.NITUserObserver):
             if frame_time - self.last_viewer_out_time > config.IRCAM_VIEWER_OUTPUT_TIME:
                 self.last_viewer_out_time = frame_time
                 self.data['IRCamera.last_frame'][:self.frame_size] = frame.data().T.flatten()
-
+                
             # check if we want a full servo output or only fast opd computation
             # to detect opd loss
             if frame_time - self.last_servo_out_time > config.IRCAM_SERVO_OUTPUT_TIME:

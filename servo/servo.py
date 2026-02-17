@@ -79,8 +79,8 @@ class Servo(StateMachine):
                 ServoState.RUNNING, action=self._normalize),
             (ServoState.RUNNING, ServoEvent.STOP): Transition(
                 ServoState.STOPPED, action=self._stop),
-            (ServoState.RUNNING, ServoEvent.MOVE_TO_OPD): Transition(
-                ServoState.RUNNING, action=self._move_to_opd),
+            (ServoState.STAY_AT_OPD, ServoEvent.MOVE_TO_OPD): Transition(
+                ServoState.STAY_AT_OPD, action=self._move_to_opd),
             (ServoState.RUNNING, ServoEvent.CLOSE_LOOP): Transition(
                 ServoState.STAY_AT_OPD, action=self._close_loop),         
             (ServoState.STAY_AT_OPD, ServoEvent.OPEN_LOOP): Transition(
@@ -248,7 +248,7 @@ class Servo(StateMachine):
 
         # start com
         self.start_worker(
-            com.SerialComm, 0,
+            com.SerialComm, 10,
             port=config.SERIAL_PORT,
             baudrate=config.SERIAL_BAUDRATE,
             status_rate_hz=config.SERIAL_STATUS_RATE,

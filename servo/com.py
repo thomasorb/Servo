@@ -163,24 +163,20 @@ class SerialComm(core.Worker):
             if len(buf) < 4:
                 return
 
-            print(buf)
             # Find STX (resync if necessary)
             if buf[0] != STX_RX:
                 del buf[0]
                 continue
 
-            print('ok1')
             if len(buf) < 3:
                 return
 
-            print('ok2')
             cmd_type = buf[1]
             length = buf[2]
             total_len = 3 + length + 1
             if len(buf) < total_len:
                 return
 
-            print('ok3')
             payload = buf[3:3+length]
             chk = buf[3+length]
 
