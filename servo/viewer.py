@@ -1197,12 +1197,12 @@ class Viewer(core.Worker):
                 new_frame = self.frame
             else:
                 raw = self.data['IRCamera.roi'][:profile_len**2]
-                new_frame = np.array(raw).reshape(self.roi_shape)
+                new_frame = np.array(raw).reshape(self.roi_shape).T
             if self._show_normalized:
                 raw_min = self.data['Servo.roinorm_min'][:profile_len**2]
-                raw_min = np.array(raw_min).reshape(self.roi_shape)
+                raw_min = np.array(raw_min).reshape(self.roi_shape).T
                 raw_max = self.data['Servo.roinorm_max'][:profile_len**2]
-                raw_max = np.array(raw_max).reshape(self.roi_shape)
+                raw_max = np.array(raw_max).reshape(self.roi_shape).T
                 new_frame = np.clip((new_frame - raw_min) / (raw_max - raw_min), 0, 1)
             self.roi_image = new_frame
         except Exception as e:

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 import logging
+import traceback
 
 from . import logger
 from . import run
@@ -76,8 +77,12 @@ def main():
     log = logging.getLogger(__name__)
     log.info(f"CLI args: {args}")
 
-    # -------- Dispatch to subcommands --------
-    if args.command == "calib":
-        return run.run(mode='calib', nocam=args.nocam, noviewer=args.noviewer)
-    elif args.command == "run":
-        return run.run(mode='loop', nocam=args.nocam, noviewer=args.noviewer)
+    try:
+        if args.command == "calib":
+            return run.run(mode='calib', nocam=args.nocam, noviewer=args.noviewer)
+        elif args.command == "run":
+            return run.run(mode='loop', nocam=args.nocam, noviewer=args.noviewer)
+
+    except KeyboardInterrupt:
+        log.error(f'error during run: {traceback.format_exc()}')
+

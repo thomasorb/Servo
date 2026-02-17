@@ -4,6 +4,7 @@ import traceback
 import psutil
 import logging
 import numpy as np
+import signal
 
 from . import ircam
 from . import core
@@ -18,52 +19,98 @@ from . import com
 
 from .fsm import StateMachine, Transition, ServoState, ServoEvent, NexlineState
 
-
 log = logging.getLogger(__name__)
 
+import subprocess
 
+def _elevate_ircam_rt(pid: int, cpu: int = 2, prio: int = 80):
+    """
+    Elevate only the given PID to SCHED_FIFO (prio) and pin it to a specific CPU.
+    Requires sudo privileges for chrt & taskset. No effect on parent process.
+    """
+    # Pin to CPU (logical index; CPU 2 means the 3rd logical core)
+    try:
+        subprocess.run(["sudo", "taskset", "-pc", str(cpu), str(pid)], check=True)
+    except Exception as e:
+        log.error(f"Failed to set CPU affinity for IRCam PID {pid}: {e}")
+
+    # Set real-time scheduling policy to SCHED_FIFO with priority 'prio'
+    try:
+        subprocess.run(["sudo", "chrt", "-f", "-p", str(prio), str(pid)], check=True)
+    except Exception as e:
+        log.error(f"Failed to set SCHED_FIFO for IRCam PID {pid}: {e}")
+        
+        
 def worker_process(queue, data, WorkerClass, events, priority=None, kwargs=None):
     """
     Subprocess that:
-      - configures logging
-      - instantiates and runs the worker
-      - guarantees worker.stop() is called
+    - configures logging
+    - instantiates and runs the worker
+    - guarantees worker.stop() is called
     """
+    
     if kwargs is None:
         kwargs = {}
-    
-    # Optionally adjust process priority
-    if priority is not None:
-        try:
-            psutil.Process().nice(priority)
-        except psutil.AccessDenied:
-            pass
 
-    # Configure logging for workers
+    # (existing) optional nice
+    
+    # if priority is not None:
+    #     try:
+    #         psutil.Process().nice(priority)
+    #     except:
+    #         log.error(f"Failed to set nice level {priority} for {WorkerClass.__name__}: {e}")
+
+    
+    # --- Hardening for IRCam only (no sudo needed here) ---
+    # if WorkerClass.__name__ == "IRCamera":
+    #     # 1) Lock pages in RAM to avoid major page faults during callbacks
+    #     try:
+    #         import ctypes, gc
+    #         libc = ctypes.CDLL("libc.so.6", use_errno=True)
+    #         MCL_CURRENT, MCL_FUTURE = 1, 2
+    #         libc.mlockall(MCL_CURRENT | MCL_FUTURE)
+    #         # 2) Disable GC in the RT-ish child; do collections off-RT if needed
+    #         gc.disable()
+    #     except Exception:
+    #         pass
+
+    _stop_requested = {"flag": False}
+
+    def _child_handle_signal(signum, frame):
+        # Avoid re-entrancy
+        if not _stop_requested["flag"]:
+            _stop_requested["flag"] = True
+            # Best-effort: set the worker stop event known by parent
+            try:
+                stop_event_name = f"{WorkerClass.__name__}.stop"
+                if events.get(stop_event_name):
+                    events[stop_event_name].set()
+            except Exception:
+                pass
+
+    signal.signal(signal.SIGINT, _child_handle_signal)
+    signal.signal(signal.SIGTERM, _child_handle_signal)
+
     logger.configure_worker_logging(queue=queue, redirect_std=True)
     log = logging.getLogger(f"servo.worker.{WorkerClass.__name__}")
-
     log.info("Worker started")
 
     worker = None
-    
     try:
-        # Instantiate user worker
-        worker = WorkerClass(data, events, **kwargs)
-        worker.run()
-
-    except Exception:
-        log.error(f"Unhandled exception inside worker:\n {traceback.format_exc()}")
-
+        worker = WorkerClass(data, events, **(kwargs or {}))
+        worker.run()           # <- may raise BaseException on signal/KeyboardInterrupt
+    except BaseException as be:
+        # Catch KeyboardInterrupt and any termination to ensure stop() is called
+        log.warning(f"Worker terminating due to {type(be).__name__}: {be}")
+        # Re-raise after stop() in finally if you want parent to see non-zero exit
+        raise
     finally:
         if worker is not None:
             try:
                 worker.stop()
             except Exception:
-                log.error(f"Error in worker.stop():\n {traceback.format_exc()}")
-
+                log.error("Error in worker.stop()", exc_info=True)
         log.info("Worker terminated cleanly")
-
 
 
 class Servo(StateMachine):
@@ -109,6 +156,22 @@ class Servo(StateMachine):
 
         self.data = core.SharedData()
 
+
+    def install_signal_handlers(self):
+        """
+        Install SIGINT/SIGTERM handlers to trigger a clean shutdown via _stop transition.
+        """
+        def _handle_signal(signum, frame):
+            log.warning(f"Received signal {signum}, initiating graceful stop...")
+            try:
+                # Set the FSM event that triggers the STOP transition
+                self.dispatch(ServoEvent.STOP)
+            except Exception:
+                log.error("Error dispatching STOP on signal", exc_info=True)
+
+        # Parent process only: install handlers
+        signal.signal(signal.SIGINT, _handle_signal)
+        signal.signal(signal.SIGTERM, _handle_signal)
         
     def poll(self):
         evs = self.events
@@ -120,6 +183,7 @@ class Servo(StateMachine):
 
     # Hooks (facultatif)
     def on_enter_running(self, _):
+        self.install_signal_handlers()
         log.info(">> RUNNING")
         # running loop
         while True:
@@ -129,8 +193,8 @@ class Servo(StateMachine):
                 if self.state is ServoState.STOPPED:
                     break
                 time.sleep(0.1)
-            except KeyboardInterrupt:
-                log.error('Keyboard interrupt')
+            except Exception as e:
+                log.error('Exception at running:\n' + traceback.format_exc())
                 self.events('Servo.stop').set()
                 
         
@@ -221,13 +285,21 @@ class Servo(StateMachine):
     def start_worker(self, WorkerClass, priority, **kwargs):
         stop_event_name = f"{WorkerClass.__name__}.stop"
         self.events[stop_event_name] = self.event_manager.Event()
-        
-        worker = multiprocessing.Process(target=worker_process,
-                                         args=(self.queue, self.data, WorkerClass,
-                                               self.events, priority, kwargs))
+    
+        worker = multiprocessing.Process(
+            target=worker_process,
+            args=(self.queue, self.data, WorkerClass, self.events, priority, kwargs),
+            name=f"worker.{WorkerClass.__name__}"
+        )
         self.workers.append((worker, stop_event_name))
         worker.start()
 
+        # # >>> Only for IRCam: elevate child to RT on CPU 2 <<<
+        # if WorkerClass is ircam.IRCamera:
+        #     if worker.pid is not None:
+        #         _elevate_ircam_rt(worker.pid, cpu=2, prio=80)
+        #     else:
+        #         log.error("IRCam worker PID unavailable; cannot elevate to RT")
         
     # Actions
     def _start(self, _):
@@ -241,25 +313,29 @@ class Servo(StateMachine):
             self.start_worker(ircam.IRCamera, -20)
 
         # start nexline
-        self.start_worker(nexline.Nexline, 0)
+        # self.start_worker(nexline.Nexline, 0)
         
         # start piezos
-        self.start_worker(piezo.DAQ, 0)
+        # self.start_worker(piezo.DAQ, 0)
 
         # start com
-        self.start_worker(
-            com.SerialComm, 10,
-            port=config.SERIAL_PORT,
-            baudrate=config.SERIAL_BAUDRATE,
-            status_rate_hz=config.SERIAL_STATUS_RATE,
-        )
+        # self.start_worker(
+        #     com.SerialComm, 10,
+        #     port=config.SERIAL_PORT,
+        #     baudrate=config.SERIAL_BAUDRATE,
+        #     status_rate_hz=config.SERIAL_STATUS_RATE,
+        # )
         
         # start viewer
         if not self.noviewer:
             if not self.nocam:
+                timeout_start = time.time()
                 while True:
                     time.sleep(0.1)
                     if self.data['IRCamera.initialized'][0]: break
+                    if time.time() - timeout_start > 3:
+                        log.error("Timeout waiting for IRCamera initialization; starting viewer anyway")
+                        break
             self.start_worker(viewer.Viewer, 10)
 
 

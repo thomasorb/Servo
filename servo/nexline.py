@@ -95,8 +95,15 @@ class Nexline(core.Worker, StateMachine):
         return opd / 2 * np.cos(np.deg2rad(config.LASER_ANGLE))
         
     def loop_once(self):
-        self.poll()
-        time.sleep(0.1)
+        try:
+            self.poll()
+            
+            #if self.state is NexlineState.STOPPED:
+            #    return
+            time.sleep(0.1)
+        except KeyboardInterrupt:
+            log.error('Keyboard interrupt')
+            self.events('Nexline.stop').set()
 
     def _stop(self, _):
         log.info('Stopping Nexline')
