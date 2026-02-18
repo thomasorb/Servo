@@ -113,13 +113,17 @@ class SerialComm(core.Worker):
         self.period = 1.0 / float(status_rate_hz)
 
         # Open non-blocking serial port for low latency
-        self.ser = serial.Serial(
-            port=self.port,
-            baudrate=self.baudrate,
-            timeout=0.0,          # non-blocking reads
-            write_timeout=0.0,    # non-blocking writes
-            inter_byte_timeout=None
-        )
+        try:
+            self.ser = serial.Serial(
+                port=self.port,
+                baudrate=self.baudrate,
+                timeout=0.0,          # non-blocking reads
+                write_timeout=0.0,    # non-blocking writes
+                inter_byte_timeout=None
+            )
+        except Exception as e:
+            log.error(f"Failed to open serial port {self.port}: {e}. If the permission was undenied don't forget to add dialout group to your user and re-login with'sudo usermod -aG dialout $USER.")
+            raise
 
         # RX state
         self._rx_buf = bytearray()

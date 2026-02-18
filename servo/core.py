@@ -100,6 +100,7 @@ class SharedData(object):
         self.add_value('IRCamera.median_sampling_time', float(np.nan))
         self.add_value('IRCamera.lost_frames', int(0))
         self.add_value('IRCamera.state', float(0), stored=False)
+        self.add_value('IRCamera.full_output', float(0), stored=False)
 
         # selected pixels: 0:none, 1:side, 2:center
         self.add_value('Servo.state', float(0), stored=False)

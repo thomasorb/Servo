@@ -313,18 +313,18 @@ class Servo(StateMachine):
             self.start_worker(ircam.IRCamera, -20)
 
         # start nexline
-        # self.start_worker(nexline.Nexline, 0)
+        self.start_worker(nexline.Nexline, 0)
         
         # start piezos
-        # self.start_worker(piezo.DAQ, 0)
+        self.start_worker(piezo.DAQ, 0)
 
         # start com
-        # self.start_worker(
-        #     com.SerialComm, 10,
-        #     port=config.SERIAL_PORT,
-        #     baudrate=config.SERIAL_BAUDRATE,
-        #     status_rate_hz=config.SERIAL_STATUS_RATE,
-        # )
+        self.start_worker(
+            com.SerialComm, 10,
+            port=config.SERIAL_PORT,
+            baudrate=config.SERIAL_BAUDRATE,
+            status_rate_hz=config.SERIAL_STATUS_RATE,
+        )
         
         # start viewer
         if not self.noviewer:
@@ -333,7 +333,7 @@ class Servo(StateMachine):
                 while True:
                     time.sleep(0.1)
                     if self.data['IRCamera.initialized'][0]: break
-                    if time.time() - timeout_start > 3:
+                    if time.time() - timeout_start > 5:
                         log.error("Timeout waiting for IRCamera initialization; starting viewer anyway")
                         break
             self.start_worker(viewer.Viewer, 10)
@@ -362,22 +362,40 @@ class Servo(StateMachine):
         frame_size = self.data['IRCamera.frame_size'][0]
         
         def piezo_goto(val, rec=False):
-        
-            self.data['DAQ.piezos_level'][0] = np.array(
-                val, dtype=config.DAQ_PIEZO_LEVELS_DTYPE)
 
-            while True:
-                self.poll()
-
-                if self.data['DAQ.piezos_level_actual'][0] == val:
-                    break
-                if self.events['Servo.stop'].is_set():
-                    break
-                if rec:
+            if not rec:
+                self.data['DAQ.piezos_level'][0] = np.array(
+                    val, dtype=config.DAQ_PIEZO_LEVELS_DTYPE)
+            else:
+                self.data['IRCamera.full_output'][0] = float(1.0) # force full output for normalization recording
+                _goto_start_time = time.time()
+                _goto_start_level = self.data['DAQ.piezos_level_actual'][0]
+                levels = np.linspace(_goto_start_level, val, config.SERVO_NORMALIZE_REC_SIZE)
+                for ilevel in levels:
+                    
+                    self.data['DAQ.piezos_level'][0] = np.array(
+                        ilevel, dtype=config.DAQ_PIEZO_LEVELS_DTYPE)
                     rec_hprofiles.append(np.copy(self.data['IRCamera.hprofile'][:profile_len]))
                     rec_vprofiles.append(np.copy(self.data['IRCamera.vprofile'][:profile_len]))
                     rec_rois.append(np.copy(self.data['IRCamera.roi'][:profile_len**2]).reshape((
                         profile_len, profile_len)))
+                    
+                    time.sleep(config.SERVO_NORMALIZE_REC_TIME / config.SERVO_NORMALIZE_REC_SIZE)
+
+                self.data['IRCamera.full_output'][0] = float(0.)
+                
+                self.data['DAQ.piezos_level'][0] = np.array(
+                    val, dtype=config.DAQ_PIEZO_LEVELS_DTYPE)
+
+                
+            
+            while True:
+                self.poll()
+                if self.data['DAQ.piezos_level_actual'][0] == val:
+                    break
+                if self.events['Servo.stop'].is_set():
+                    break
+                
                 
             log.info(f"OPD piezo at {self.data['DAQ.piezos_level_actual'][0]}")
 
@@ -419,10 +437,13 @@ class Servo(StateMachine):
         
         self.data['Servo.vellipse_norm_coeffs'][:4] = vellipse_norm_coeffs.astype(
             config.DATA_DTYPE)
-        
-        np.save('hprofiles.npy', np.array(rec_hprofiles))
-        np.save('vprofiles.npy', np.array(rec_vprofiles))
-        np.save('rois.npy', np.array(rec_rois))
+
+        try:
+            np.save('hprofiles.npy', np.array(rec_hprofiles))
+            np.save('vprofiles.npy', np.array(rec_vprofiles))
+            np.save('rois.npy', np.array(rec_rois))
+        except Exception as e:
+            log.error(f"Failed to save normalization data: {e}")
 
     def _reset_zpd(self, _):
         log.info("ZPD Reset")

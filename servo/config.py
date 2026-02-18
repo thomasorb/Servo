@@ -4,8 +4,8 @@ import numpy as np
 #ROI_SIZE = np.prod(ROI_SHAPE)
 
 IRCAM_DEFAULT_EXPOSURE_TIME = '1us'
-IRCAM_SERVO_OUTPUT_TIME = 0.02 #s
-IRCAM_VIEWER_OUTPUT_TIME = 0.2 #s
+IRCAM_SERVO_OUTPUT_TIME = 0.01 #s
+IRCAM_VIEWER_OUTPUT_TIME = 0.1 #s
 IRCAM_BUFFER_SIZE = 100
 
 FRAME_DTYPE = np.float32
@@ -30,6 +30,8 @@ OPD_TOLERANCE = 5.0  # nm
 PIEZO_MAX_OPD_DIFF = 5000 # nm
 
 SERVO_BUFFER_SIZE = 20 # for servo values buffering
+SERVO_NORMALIZE_REC_TIME = 1.0 # s, time to record values for normalization coeffs computation
+SERVO_NORMALIZE_REC_SIZE = 10000 # s, time to record values for normalization coeffs computation
 VIEWER_BUFFER_SIZE = 1000 # for viewer servo values buffering
 
 VIEWER_ELLIPSE_DRAW_BUFFER_SIZE = 100
@@ -41,7 +43,7 @@ DEFAULT_PROFILE_POSITION = np.array((DEFAULT_PROFILE_LEN//2, DEFAULT_PROFILE_LEN
 DEFAULT_PID_OPD = [1e-4, 5e-4, 1.0]
 DEFAULT_PID_DA = [-1e-1, 1e-4, 1.0]
 
-SERIAL_PORT = "/dev/ttyUSB0"
+SERIAL_PORT = "/dev/serial/by-id/usb-Prolific_Technology_Inc._USB-Serial_Controller-if00-port0"
 SERIAL_BAUDRATE = 9600 # bps
 SERIAL_STATUS_RATE = 100 # Hz
 

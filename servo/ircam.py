@@ -18,31 +18,25 @@ class IRCamera(core.Worker):
 
         super().__init__(data, events)
 
-        print('pouetouetoute init')
         self.roi_mode = bool(roi_mode)
 
-        print('pouetouetoute5')
         if frame_shape is None:
             self.frame_shape = np.array(config.FULL_FRAME_SHAPE)
         else:
             self.frame_shape = np.array(frame_shape)
 
-        print('pouetouetoute1')
         if frame_center is None:
             self.frame_position = np.array(config.DEFAULT_FRAME_POSITION)
         else:
             self.frame_position = np.array(frame_center) - self.frame_shape//2
 
-        print('pouetouetoute2')
         self.requested_frame_shape = np.copy(self.frame_shape)
         self.requested_frame_position = np.copy(self.frame_position)
 
-        print('pouetouetout3')
         # set frame shape and positions to camera accepted values
         self.frame_shape = self.frame_shape // 8 * 8 # shape must be a multiple of 8
         self.frame_position = self.frame_position // 4 * 4 # position must be a multiple of 4
 
-        print('youpidououou')
         if np.any(self.requested_frame_shape != self.frame_shape):
             log.warning(f'frame shape {self.requested_frame_shape} was changed to {self.frame_shape} to fit camera requirements')
         if np.any(self.requested_frame_position != self.frame_position):
@@ -184,9 +178,13 @@ class DataObserver(NITLibrary.NITUserObserver):
         self.arr_last_angles= self.data['IRCamera.last_angles']
         self.arr_opds       = self.data['IRCamera.opds']
         self.arr_mean_opd   = self.data['IRCamera.mean_opd']
+        self.arr_mean_opd_buf = self.data['IRCamera.mean_opd_buffer']
         self.arr_tip        = self.data['IRCamera.tip']
         self.arr_tilt       = self.data['IRCamera.tilt']
-
+        self.arr_tip_buf    = self.data['IRCamera.tip_buffer']
+        self.arr_tilt_buf   = self.data['IRCamera.tilt_buffer']
+        
+        
         # Timer arrays (shared)
         self.timers_ns      = self.data['IRCamera.timers_ns']      # int64[5]
         self.timers_version = self.data['IRCamera.timers_version'] # int[1]
@@ -276,6 +274,9 @@ class DataObserver(NITLibrary.NITUserObserver):
             # --------- T1: compute profiles ----------
             t2 = time.perf_counter_ns()
             compute_servo_output = (frame_time - self.last_servo_out_time > config.IRCAM_SERVO_OUTPUT_TIME)
+            if bool(self.data['IRCamera.full_output'][0]):
+                compute_servo_output = True
+                
             if compute_servo_output:
                 self.last_servo_out_time = frame_time
 
@@ -304,17 +305,17 @@ class DataObserver(NITLibrary.NITUserObserver):
             # correspond to (iy, ix) in the native space.
             vprofile, hprofile, roi = utils.compute_profiles(src2d, iy, ix, iwid, profile_len, get_roi=True)
 
-            #hprofile, vprofile, roi = utils.compute_profiles(frame.data().T, ix, iy, iwid, profile_len, get_roi=True)
             t3 = time.perf_counter_ns()
             t_profiles = t3 - t2
 
             # --------- T2: normalization + levels + angles/opd ----------
             t4 = time.perf_counter_ns()
+            self.hmin = self.arr_hnorm_min[:profile_len]
+            self.hmax = self.arr_hnorm_max[:profile_len]
+            self.vmin = self.arr_vnorm_min[:profile_len]
+            self.vmax = self.arr_vnorm_max[:profile_len]
+
             if compute_servo_output:
-                hmin = self.arr_hnorm_min[:profile_len]
-                hmax = self.arr_hnorm_max[:profile_len]
-                vmin = self.arr_vnorm_min[:profile_len]
-                vmax = self.arr_vnorm_max[:profile_len]
 
                 # Refresh pixel lists when states change
                 x_states = self.arr_xpix_states
@@ -331,25 +332,29 @@ class DataObserver(NITLibrary.NITUserObserver):
                     self.arr_vlev_pos[:3] = self.ypixels_list_pos
 
                 # Normalized profiles (Numba kernels)
-                self.arr_hprof_norm[:profile_len] = utils.normalize_profile(hprofile, hmin, hmax, inplace=False)
-                self.arr_vprof_norm[:profile_len] = utils.normalize_profile(vprofile, vmin, vmax, inplace=False)
-
-                # Levels (3 positions per axis)
-                for i in range(3):
-                    self.hlevels_ws[i] = utils.normalize_and_compute_profile_level(hprofile, hmin, hmax, self.xpixels_list[i])
-                    self.vlevels_ws[i] = utils.normalize_and_compute_profile_level(vprofile, vmin, vmax, self.ypixels_list[i])
-
-                # Angles & OPD
-                self.angles_ws[:2] = utils.compute_angles(self.hlevels_ws, self.arr_hellipse[:4], self.arr_last_angles[:2])
-                self.angles_ws[2:] = utils.compute_angles(self.vlevels_ws, self.arr_vellipse[:4], self.arr_last_angles[2:])
-                opds = utils.compute_opds(self.angles_ws)
-                opds -= self.data['IRCamera.mean_opd_offset']
-                mean_opd = utils.mean(opds)
+                self.arr_hprof_norm[:profile_len] = utils.normalize_profile(
+                    hprofile, self.hmin, self.hmax, inplace=False)
+                self.arr_vprof_norm[:profile_len] = utils.normalize_profile(
+                    vprofile, self.vmin, self.vmax, inplace=False)
 
             t5 = time.perf_counter_ns()
             t_norm_levels_opd = t5 - t4
 
-            # --------- T3: write servo/viewer outputs ----------
+            # Levels (3 positions per axis)
+            for i in range(3):
+                self.hlevels_ws[i] = utils.normalize_and_compute_profile_level(
+                    hprofile, self.hmin, self.hmax, self.xpixels_list[i])
+                self.vlevels_ws[i] = utils.normalize_and_compute_profile_level(
+                    vprofile, self.vmin, self.vmax, self.ypixels_list[i])
+
+            # Angles & OPD
+            self.angles_ws[:2] = utils.compute_angles(self.hlevels_ws, self.arr_hellipse[:4], self.arr_last_angles[:2])
+            self.angles_ws[2:] = utils.compute_angles(self.vlevels_ws, self.arr_vellipse[:4], self.arr_last_angles[2:])
+            opds = utils.compute_opds(self.angles_ws)
+            opds -= self.data['IRCamera.mean_opd_offset']
+            mean_opd = utils.mean(opds)
+
+            
             t6 = time.perf_counter_ns()
             if compute_servo_output:
                 # Profiles & ROI to shared memory (no .flatten(), roi is contiguous)
@@ -367,12 +372,28 @@ class DataObserver(NITLibrary.NITUserObserver):
                 tilt = self.angles_ws[3] - self.angles_ws[2]
                 self.arr_tip[0]  = tip
                 self.arr_tilt[0] = tilt
-                self.arr_last_angles[:4] = self.angles_ws
+
+
+                self.opd_deque.appendleft(float(mean_opd))
+                self.arr_mean_opd_buf[:min(
+                    len(self.opd_deque), config.SERVO_BUFFER_SIZE)] = np.array(
+                        self.opd_deque, dtype=config.FRAME_DTYPE)
+                
+                self.tip_deque.appendleft(float(tip))
+                self.arr_tip_buf[:min(
+                    len(self.tip_deque), config.SERVO_BUFFER_SIZE)] = np.array(
+                        self.tip_deque, dtype=config.FRAME_DTYPE)
+                 
+                self.tilt_deque.appendleft(float(tilt))
+                self.arr_tilt_buf[:min(
+                    len(self.tilt_deque), config.SERVO_BUFFER_SIZE)] = np.array(
+                        self.tilt_deque, dtype=config.FRAME_DTYPE)
+                
+            self.arr_last_angles[:4] = self.angles_ws
 
             t7 = time.perf_counter_ns()
             t_write_servo = t7 - t6
 
-            # --------- Publish timers (ns) to shared memory coherently ----------
             end_total = time.perf_counter_ns()
             t_total = end_total - start_total
             utils.publish_timers_ns(
@@ -386,7 +407,7 @@ class DataObserver(NITLibrary.NITUserObserver):
             )
 
         except Exception as e:
-            log.error('error on new frame:', {traceback.format_exc()})
+            log.error(f'error on new frame: {e}')
 
         
     

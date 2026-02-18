@@ -225,7 +225,7 @@ class Viewer(core.Worker):
         # Root layout: left = Notebook (tabs), right = persistent controls
         # -----------------------------------------------------------------
         root_main = ttk.Frame(self.root)
-        root_main.pack(fill=tk.BOTH, expand=True)
+        root_main.pack(side=tk.TOP, fill=tk.BOTH, expand=True) 
 
         # Left stack holds the Notebook; switching tabs only changes this area
         left_stack = ttk.Frame(root_main)
@@ -259,7 +259,7 @@ class Viewer(core.Worker):
         # -----------------------------------------------------------------
         self._right_col = ttk.Frame(root_main)
         self._right_col.pack(side=tk.RIGHT, fill=tk.Y, padx=6, pady=6)
-
+        
         status_frame = ttk.LabelFrame(self._right_col, text="Status", padding=10)
         status_frame.pack(fill=tk.X, expand=False, pady=15)
         self.status_var = tk.StringVar(value="Idle")
@@ -301,10 +301,35 @@ class Viewer(core.Worker):
         e.pack(side="left", anchor="w", pady=4)
         e.bind("<Return>", self.on_opd_target_changed)
 
-        # ROI preview canvas now lives in the persistent right column
-        self.roi_canvas = tk.Canvas(self._right_col, bg="black")
-        self.roi_canvas.pack(expand=False)
+        # --- ROI preview (dedicated wrapper to prevent resize feedback loops) ---
+        # The wrapper keeps a stable area; we disable propagate only on this wrapper,
+        # not on the entire right column.
+        self.roi_wrap = ttk.LabelFrame(self._right_col, text="ROI", padding=6)
+        self.roi_wrap.pack(fill=tk.X, expand=False, pady=10)
+
+        # Give the wrapper an initial, reasonable footprint; it won't shrink to zero
+        # because we disable propagate on it.
+        self.roi_wrap.configure(width=360, height=360)
+        self.roi_wrap.pack_propagate(False)  # children won't force the wrapper to grow/shrink
+
+        # The actual canvas lives inside the wrapper and can fill it freely.
+        self.roi_canvas = tk.Canvas(self.roi_wrap, bg="black")
+        self.roi_canvas.pack(fill=tk.BOTH, expand=True)
         self.roi_image_id = None
+
+        # --- ROI bootstrap (safe defaults shown before first refresh) ---
+        try:
+            profile_len0 = int(self.data['IRCamera.profile_len'][0])
+        except Exception:
+            profile_len0 = 32  # safe fallback if the key isn't ready yet
+        self.roi_shape = (profile_len0, profile_len0)
+        self.roi_image = np.zeros(self.roi_shape, dtype=np.float32)
+
+        # Recompute the internal canvas size when the wrapper gets its final size
+        self.roi_wrap.bind("<Configure>", lambda e: self._resize_roi_preview())
+
+        # Do one after idle so the very first layout is square
+        self.root.after_idle(self._resize_roi_preview)
 
         # -----------------------------------------------------------------
         # Build "Main" tab LEFT content only (image + profiles)
@@ -473,7 +498,7 @@ class Viewer(core.Worker):
         # Global toolbar (persistent across all tabs)
         # -----------------------------------------------------------------
         toolbar = ttk.Frame(self.root)
-        toolbar.pack(fill=tk.X, pady=3)
+        toolbar.pack(side=tk.TOP, fill=tk.X, pady=3, before=root_main)
 
         ttk.Label(toolbar, text="LUT:").pack(side=tk.LEFT, padx=5)
         self.lut_var = tk.StringVar(value="magma")
@@ -490,10 +515,6 @@ class Viewer(core.Worker):
 
         self.reset_btn = ttk.Button(toolbar, text="Reset Zoom", command=self.reset_zoom)
         self.reset_btn.pack(side=tk.LEFT, padx=10)
-
-        # (Optional) Clear ROI button kept commented
-        # self.clear_roi_btn = ttk.Button(toolbar, text="Clear ROI", command=self.clear_roi)
-        # self.clear_roi_btn.pack(side=tk.LEFT, padx=10)
 
         self.stop_btn = ttk.Button(toolbar, text="STOP", command=self.stop_servo)
         self.stop_btn.pack(side=tk.RIGHT, padx=10)
@@ -523,7 +544,7 @@ class Viewer(core.Worker):
         # Global info bar (persistent across all tabs)
         # -----------------------------------------------------------------
         info = ttk.Frame(self.root, height=30)
-        info.pack(fill=tk.X, pady=3)
+        info.pack(side=tk.BOTTOM, fill=tk.X, pady=3)
         info.pack_propagate(False)
 
         ttk.Label(info, text="Position:").pack(side=tk.LEFT)
@@ -640,9 +661,6 @@ class Viewer(core.Worker):
         self.canvas.bind("<Button-4>", lambda e: self.zoom_at(e.x, e.y, 1.1))
         self.canvas.bind("<Button-5>", lambda e: self.zoom_at(e.x, e.y, 0.9))
 
-        # SHIFT tool (none)
-        # CTRL tool (ROI)
-        self.roi_rect_id = None
         self._normal_click_start = None
 
         self.root.bind("<<Shutdown>>", lambda e: self._really_stop())
@@ -797,6 +815,37 @@ class Viewer(core.Worker):
     # ---------------------------------------------------------------------
     # RENDERING
     # ---------------------------------------------------------------------
+    def _resize_roi_preview(self):
+        """Keep the ROI preview square inside its wrapper, without parent feedback loops."""
+        try:
+            # Debounce: avoid multiple runs while geometry is settling
+            if getattr(self, "_roi_resize_pending", False):
+                return
+            self._roi_resize_pending = True
+
+            def do_resize():
+                try:
+                    # Compute a square size that fits inside the wrapper's current content area
+                    target = max(160, min(self.roi_wrap.winfo_width(), self.roi_wrap.winfo_height()))
+
+                    # Only update the canvas if size actually changes (prevents jitter)
+                    cur_w = self.roi_canvas.winfo_width()
+                    cur_h = self.roi_canvas.winfo_height()
+                    if target != cur_w or target != cur_h:
+                        self.roi_canvas.config(width=target, height=target)
+
+                    # We don't call render() here; the normal refresh->render loop will update the image.
+                    # If you need an immediate repaint, you can uncomment:
+                    # if getattr(self, "tk_image", None) is not None:
+                    #     self.render()
+                finally:
+                    self._roi_resize_pending = False
+
+            self.root.after_idle(do_resize)
+        except Exception:
+            self._roi_resize_pending = False
+
+
     def render(self):
         # main image
         stretched = self.stretch_frame(self.frame.T)
@@ -813,20 +862,25 @@ class Viewer(core.Worker):
             self.canvas.itemconfig(self.image_id, image=self.tk_image)
         self.canvas.coords(self.image_id, self.offset_x, self.offset_y)
 
-        # roi image
-        if hasattr(self, 'roi_image'):
+        # --- ROI image (right-side thumbnail) ---
+        try:
             stretched = self.stretch_frame(self.roi_image.T)
             rgb = self.apply_lut(stretched)
             w = max(1, self.roi_canvas.winfo_width())
             h = max(1, self.roi_canvas.winfo_height())
             pil_img = Image.fromarray(rgb, "RGB").resize((w, h), Image.NEAREST)
             self.tk_roi = ImageTk.PhotoImage(pil_img)
+
             if self.roi_image_id is None:
-                self.roi_image_id = self.roi_canvas.create_image(0, 0, anchor="nw",
-                                                                 image=self.tk_roi)
+                self.roi_image_id = self.roi_canvas.create_image(0, 0, anchor="nw", image=self.tk_roi)
             else:
                 self.roi_canvas.itemconfig(self.roi_image_id, image=self.tk_roi)
             self.roi_canvas.coords(self.roi_image_id, 0, 0)
+
+            # Do NOT tag_raise on the main canvas; roi_image_id lives in roi_canvas
+            # self.canvas.tag_raise(self.roi_image_id)  # <-- remove this line
+        except Exception as e:
+            log.error(f'error setting roi image : {e}')
 
         # Markers
         r = 4
@@ -842,12 +896,7 @@ class Viewer(core.Worker):
         x0, y0, x1, y1 = ix-hw, iy-hw, ix+hw, iy+hw
         cx0, cy0 = self.image_to_canvas(x0, y0)
         cx1, cy1 = self.image_to_canvas(x1, y1)
-        if self.roi_rect_id is None:
-            self.roi_rect_id = self.canvas.create_rectangle(
-                cx0, cy0, cx1, cy1, outline="#5FA8FF", width=2)
-        else:
-            self.canvas.coords(self.roi_rect_id, cx0, cy0, cx1, cy1)
-        self.canvas.tag_raise(self.roi_rect_id)
+        
         self.canvas.tag_raise(self.cross_h)
         self.canvas.tag_raise(self.cross_v)
 
@@ -865,8 +914,7 @@ class Viewer(core.Worker):
         self.offset_y = (ch - self.img_h * self.scale) / 2
 
         # ROI preview square on the persistent right column (same logic as before)
-        size = max(1, min(self._right_col.winfo_width(), self._right_col.winfo_height()))
-        self.roi_canvas.config(width=size, height=size)
+        self._resize_roi_preview()
         self.fitted = True
         self.render()
 
@@ -924,7 +972,6 @@ class Viewer(core.Worker):
         if event.state & 0x0001:  # SHIFT
             pass
         elif event.state & 0x0004:  # CTRL
-            # ROI tool disabled here
             pass
         else:
             self._normal_click_start = (event.x, event.y)
@@ -933,7 +980,6 @@ class Viewer(core.Worker):
         if event.state & 0x0001:
             pass
         elif event.state & 0x0004:
-            # ROI tool disabled here
             pass
 
     def add_marker(self, ix, iy):
@@ -1159,7 +1205,7 @@ class Viewer(core.Worker):
         except Exception: pass
 
         mean_opd = self.data['IRCamera.mean_opd'][0]
-        std_opd = self.opd_std_buf[0] if self.opd_std_buf else np.nan
+        std_opd = self.opd_std_buf[-1] if self.opd_std_buf else np.nan
         fps = 1./self.data['IRCamera.median_sampling_time'][0]
         drops = self.data['IRCamera.lost_frames'][0]
         status_str_list = (f"mean OPD: {mean_opd:.0f} nm",
@@ -1196,8 +1242,13 @@ class Viewer(core.Worker):
             if self._roi_mode:
                 new_frame = self.frame
             else:
-                raw = self.data['IRCamera.roi'][:profile_len**2]
-                new_frame = np.array(raw).reshape(self.roi_shape).T
+                try:
+                    raw = self.data['IRCamera.roi'][:profile_len**2]
+                    new_frame = np.array(raw).reshape(self.roi_shape).T
+                except Exception as e:
+                    log.error(f"Error getting ROI data: {e}")
+                    new_frame = np.zeros(self.roi_shape).T
+                    
             if self._show_normalized:
                 raw_min = self.data['Servo.roinorm_min'][:profile_len**2]
                 raw_min = np.array(raw_min).reshape(self.roi_shape).T
@@ -1329,12 +1380,15 @@ class Viewer(core.Worker):
         # feed buffers
         self.time_buf.appendleft(time.time())
         all_opd = self.data['IRCamera.mean_opd_buffer'][:config.SERVO_BUFFER_SIZE]
-        self.opd_mean_buf.append(np.nanmean(all_opd))
-        self.opd_std_buf.append(np.nanstd(all_opd))
+        if not np.all(np.isnan(all_opd)):
+            self.opd_mean_buf.append(np.nanmean(all_opd))
+            self.opd_std_buf.append(np.nanstd(all_opd))
+        else:
+            self.opd_mean_buf.append(np.nan)
+            self.opd_std_buf.append(np.nan)
         self.piezo_opd_buf.append(self.data['DAQ.piezos_level_actual'][0])
         self.piezo_da1_buf.append(self.data['DAQ.piezos_level_actual'][1])
         self.piezo_da2_buf.append(self.data['DAQ.piezos_level_actual'][2])
-
         self.index_longbuf += 1
         if self.index_longbuf > config.VIEWER_BUFFER_SIZE:
             self.time_longbuf.append(np.mean(self.time_buf))
@@ -1852,13 +1906,13 @@ class Viewer(core.Worker):
 
     def reset_tiptilt(self):
         """Set target angles equal to current (zero error)."""
-        self.data['Servo.tip_target'][0] = float(np.mean(self.data['IRCamera.tip_buffer'][:100]))
-        self.data['Servo.tilt_target'][0] = float(np.mean(self.data['IRCamera.tilt_buffer'][:100]))
+        self.data['Servo.tip_target'][0] = float(np.mean(self.data['IRCamera.tip_buffer'][:config.IRCAM_BUFFER_SIZE]))
+        self.data['Servo.tilt_target'][0] = float(np.mean(self.data['IRCamera.tilt_buffer'][:config.IRCAM_BUFFER_SIZE]))
 
     # events
     def stop_servo(self):
         self._set_event('Servo.stop')
-
+        
     def normalize(self):
         self._set_event('Servo.normalize')
 
