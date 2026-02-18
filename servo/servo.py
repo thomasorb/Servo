@@ -101,7 +101,8 @@ def worker_process(queue, data, WorkerClass, events, priority=None, kwargs=None)
         worker.run()           # <- may raise BaseException on signal/KeyboardInterrupt
     except BaseException as be:
         # Catch KeyboardInterrupt and any termination to ensure stop() is called
-        log.warning(f"Worker terminating due to {type(be).__name__}: {be}")
+        log.error(f"Worker terminating due to {type(be).__name__}: {be}")
+        log.error("Traceback:\n" + traceback.format_exc())
         # Re-raise after stop() in finally if you want parent to see non-zero exit
         raise
     finally:
