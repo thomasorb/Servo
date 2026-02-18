@@ -137,8 +137,8 @@ class Servo(StateMachine):
                 ServoState.RUNNING, action=self._roi_mode),
             (ServoState.RUNNING, ServoEvent.FULL_FRAME_MODE): Transition(
                 ServoState.RUNNING, action=self._full_frame_mode),
-            (ServoState.RUNNING, ServoEvent.RESET_ZPD): Transition(
-                ServoState.RUNNING, action=self._reset_zpd),
+            (ServoState.STAY_AT_OPD, ServoEvent.RESET_ZPD): Transition(
+                ServoState.STAY_AT_OPD, action=self._reset_zpd),
             
         }
         super().__init__(ServoState.IDLE, table)
@@ -221,6 +221,8 @@ class Servo(StateMachine):
 
     def on_enter_stay_at_opd(self, _):
         log.info(">> STAY_AT_OPD")
+
+        self.data['Servo.is_lost'][0] = float(False)
         
         opd_target = self.data['Servo.opd_target'][0]
         tip_target = self.data['Servo.tip_target'][0]
@@ -300,10 +302,13 @@ class Servo(StateMachine):
                 self.poll()
 
                 if self.events['Servo.stop'].is_set():
-                      break
+                    break
 
                 if self.events['Servo.open_loop'].is_set():
-                      break
+                    break
+
+                if self.data['Servo.is_lost'][0] == float(True):
+                    break
 
                 time.sleep(config.OPD_LOOP_TIME)
                 

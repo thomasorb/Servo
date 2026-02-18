@@ -5,8 +5,8 @@ from tkinter import ttk
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
-
 from ... import config
+
 
 class BuffersTab:
     """Dynamic time-series tab (1 subplot per series)."""
@@ -22,20 +22,25 @@ class BuffersTab:
         self.root = ttk.Frame(parent)
         self.root.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
 
-        # buffers
+        # time base + x buffer (seconds)
         self.t0 = time.perf_counter()
         self.time_buf = deque(maxlen=config.VIEWER_BUFFER_SIZE)
-        # series: [{'key','reducer','color','index','label'}]
+
+        # series defs [{'key','reducer','color','index','label'}]
         self.series_defs = []
-        # data buffers keyed by ident=(key,index)
+        # y buffers per series ident=(key,index)
         self.series_bufs = {}
-        # plot objects
+
+        # matplotlib objects
+        self.fig = None
+        self.canvas = None
         self.axes_by_ident = {}   # ident -> Axes
         self.lines_by_ident = {}  # ident -> Line2D
 
+        self._last_draw = 0.0
         self._build_ui()
 
-    # ui
+    # ---------- UI ----------
     def _build_ui(self):
         left = ttk.Frame(self.root)
         left.pack(side=tk.LEFT, fill=tk.Y, padx=(0, 8))
@@ -71,6 +76,7 @@ class BuffersTab:
             self.tree.column(c, width=w, anchor='w')
         self.tree.pack(fill=tk.X, padx=4, pady=(0, 6))
 
+        # edit row
         edit = ttk.Frame(right)
         edit.pack(fill=tk.X, pady=(0, 8))
         ttk.Label(edit, text='Reducer').pack(side=tk.LEFT)
@@ -78,22 +84,25 @@ class BuffersTab:
         cb_red = ttk.Combobox(edit, textvariable=self.reducer_var,
                               values=self.REDUCERS, state='readonly', width=10)
         cb_red.pack(side=tk.LEFT, padx=(6, 14))
-        ttk.Button(edit, text='Apply to selection', command=self._apply_reducer).pack(side=tk.LEFT)
+        ttk.Button(edit, text='Apply to selection', command=self._apply_reducer).pack(side=tk.LEFT, padx=(0, 8))
+        # NEW: clear buffers button
+        ttk.Button(edit, text='Clear buffers', command=self._clear_buffers).pack(side=tk.LEFT)
 
+        # presets
         presets = ttk.LabelFrame(right, text='Presets', padding=6)
         presets.pack(fill=tk.X, pady=(0, 8))
         ttk.Button(presets, text='OPD mean', command=self._preset_opd_mean).pack(side=tk.LEFT, padx=4)
         ttk.Button(presets, text='OPD std', command=self._preset_opd_std).pack(side=tk.LEFT, padx=4)
         ttk.Button(presets, text='Piezos', command=self._preset_piezos).pack(side=tk.LEFT, padx=4)
 
-        # figure (single Figure, N subplots stacked)
+        # figure
         fig_wrap = ttk.LabelFrame(right, text='Time series', padding=6)
         fig_wrap.pack(fill=tk.BOTH, expand=True)
         self.fig = plt.Figure(figsize=(6, 2.2), dpi=100)
         self.canvas = FigureCanvasTkAgg(self.fig, master=fig_wrap)
         self.canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
 
-    # keys
+    # ---------- Keys ----------
     def _refresh_keylist(self, full=False):
         try:
             keys = list(self.viewer.data.keys())
@@ -109,7 +118,7 @@ class BuffersTab:
         for k in keys:
             self.lb.insert(tk.END, k)
 
-    # series mgmt
+    # ---------- Series mgmt ----------
     def _color_next(self):
         return self.COLORS[len(self.series_defs) % len(self.COLORS)]
 
@@ -122,14 +131,15 @@ class BuffersTab:
         d = {'key': key, 'reducer': reducer, 'color': color, 'index': index, 'label': label}
         self.series_defs.append(d)
         self.series_bufs[ident] = deque(maxlen=config.VIEWER_BUFFER_SIZE)
-        # mirror in table
+        # mirror row
         self.tree.insert('', tk.END, values=(label, key, '' if index is None else index, reducer, color))
-        # rebuild subplots
+        # rebuild plots
         self._rebuild_axes()
 
     def _add_selected(self):
         sels = self.lb.curselection()
-        if not sels: return
+        if not sels:
+            return
         for i in sels:
             key = self.lb.get(i)
             self._add_series(key, reducer=self.REDUCERS[0], index=None, label=key)
@@ -139,11 +149,13 @@ class BuffersTab:
         items = self.tree.selection()
         if not items:
             focus = self.tree.focus()
-            if focus: items = (focus,)
+            if focus:
+                items = (focus,)
         to_rm = []
         for iid in items:
             vals = self.tree.item(iid, 'values')
-            if not vals: continue
+            if not vals:
+                continue
             label, key, index, reducer, color = vals
             idx = None if index in (None, '', 'None') else int(index)
             to_rm.append((key, idx, iid))
@@ -157,10 +169,12 @@ class BuffersTab:
     def _apply_reducer(self):
         reducer = self.reducer_var.get()
         items = self.tree.selection()
-        if not items: return
+        if not items:
+            return
         for iid in items:
             vals = list(self.tree.item(iid, 'values'))
-            if not vals: continue
+            if not vals:
+                continue
             label, key, index, _old, color = vals
             vals[3] = reducer
             self.tree.item(iid, values=tuple(vals))
@@ -170,7 +184,25 @@ class BuffersTab:
                     d['reducer'] = reducer
                     break
 
-    # figure/axes
+    # ---------- Clear buffers ----------
+    def _clear_buffers(self):
+        """Clear all buffers and reset time origin."""
+        # clear time axis + reset t0 so time restarts at 0.0s
+        self.t0 = time.perf_counter()
+        self.time_buf.clear()
+        # clear data series
+        for dq in self.series_bufs.values():
+            dq.clear()
+        # wipe lines on screen
+        for line in self.lines_by_ident.values():
+            line.set_data([], [])
+        # reset axes limits
+        for ax in self.axes_by_ident.values():
+            ax.relim()
+            ax.autoscale_view()
+        self.canvas.draw_idle()
+
+    # ---------- Figure ----------
     def _rebuild_axes(self):
         """Recreate stacked subplots to match series_defs."""
         self.fig.clear()
@@ -178,7 +210,7 @@ class BuffersTab:
         self.lines_by_ident.clear()
 
         n = max(1, len(self.series_defs))
-        # make it taller when many plots (simple heuristic)
+        # dynamic figure height
         base_h = 2.2
         self.fig.set_size_inches(6, max(base_h, min(2.2 * n, 2.2 * 6)), forward=True)
 
@@ -191,6 +223,8 @@ class BuffersTab:
             ax.set_title(d['label'])
             if i < n - 1:
                 ax.tick_params(labelbottom=False)
+            else:
+                ax.set_xlabel('t [s]')  # explicit seconds on the last subplot
             ident = (d['key'], d['index'])
             line, = ax.plot([], [], color=d['color'], lw=1.6)
             self.axes_by_ident[ident] = ax
@@ -200,7 +234,7 @@ class BuffersTab:
         self.fig.tight_layout()
         self.canvas.draw_idle()
 
-    # reducers
+    # ---------- Reducers ----------
     def _reduce_value(self, v, how: str, index=None):
         try:
             arr = np.array(v)
@@ -211,20 +245,26 @@ class BuffersTab:
         if index is not None:
             try:
                 arr = arr.reshape(-1)
-                if index < 0 or index >= arr.size: return np.nan
+                if index < 0 or index >= arr.size:
+                    return np.nan
                 arr = arr[index]
             except Exception:
                 return np.nan
         if np.isscalar(arr):
             return float(arr)
-        if how == 'value': return float(arr.reshape(-1)[0])
-        if how == 'mean':  return float(np.nanmean(arr))
-        if how == 'min':   return float(np.nanmin(arr))
-        if how == 'max':   return float(np.nanmax(arr))
-        if how == 'std':   return float(np.nanstd(arr))
+        if how == 'value':
+            return float(arr.reshape(-1)[0])
+        if how == 'mean':
+            return float(np.nanmean(arr))
+        if how == 'min':
+            return float(np.nanmin(arr))
+        if how == 'max':
+            return float(np.nanmax(arr))
+        if how == 'std':
+            return float(np.nanstd(arr))
         return float(arr.reshape(-1)[0])
 
-    # presets
+    # ---------- Presets ----------
     def _preset_opd_mean(self):
         self._add_series('IRCamera.mean_opd', reducer='value', label='OPD mean')
 
@@ -236,14 +276,14 @@ class BuffersTab:
         for i, lab in enumerate(labels):
             self._add_series('DAQ.piezos_level_actual', reducer='value', index=i, label=f'Piezo {lab}')
 
-    # update loop
+    # ---------- Update loop ----------
     def update(self):
-        """Push samples + refresh plots (throttled)."""
-        # time
+        """Push samples + refresh plots (throttled, shared X in seconds)."""
+        # time (seconds since last clear)
         t = time.perf_counter() - self.t0
-        self.time_buf.append(t)
+        self.time_buf.append(t)  # bounded by config.VIEWER_BUFFER_SIZE
 
-        # series samples
+        # y samples per series
         for d in list(self.series_defs):
             key, idx, reducer = d['key'], d['index'], d['reducer']
             try:
@@ -251,15 +291,15 @@ class BuffersTab:
             except Exception:
                 val = np.nan
             y = self._reduce_value(val, reducer, index=idx)
-            self.series_bufs[(key, idx)].append(y)
+            self.series_bufs[(key, idx)].append(y)  # bounded by config.VIEWER_BUFFER_SIZE
 
-        # draw (throttle)
+        # draw (throttle ~10 fps)
         now = time.perf_counter()
-        if getattr(self, '_last_draw', 0.0) and (now - self._last_draw) < 0.10:
+        if self._last_draw and (now - self._last_draw) < 0.10:
             return
         self._last_draw = now
 
-        tx = np.array(self.time_buf)
+        tx = np.array(self.time_buf)  # shared X (seconds)
         for ident, line in list(self.lines_by_ident.items()):
             y = np.array(self.series_bufs.get(ident, []), dtype=float)
             n = min(tx.size, y.size)
@@ -271,7 +311,7 @@ class BuffersTab:
     def _autoscale_axis(self, ax, x, y):
         if ax is None or x.size < 2:
             return
-        # x range
+        # x range shared (seconds)
         ax.set_xlim(float(x.min()), float(x.max()))
         # y range with pad
         if y.size == 0 or not np.isfinite(y).any():
@@ -279,7 +319,7 @@ class BuffersTab:
         ymin, ymax = float(np.nanmin(y)), float(np.nanmax(y))
         if ymin == ymax:
             eps = 1e-6 if ymin == 0 else abs(ymin) * 0.05
-            ymin -= eps; ymax += eps
+            ymin -= eps
+            ymax += eps
         pad = (ymax - ymin) * 0.05
         ax.set_ylim(ymin - pad, ymax + pad)
-        

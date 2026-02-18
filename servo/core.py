@@ -89,6 +89,7 @@ class SharedData(object):
         self.add_array('IRCamera.last_angles', np.zeros(4, dtype=config.FRAME_DTYPE), stored=True)
         self.add_array('IRCamera.opds', np.zeros(4, dtype=config.FRAME_DTYPE), stored=True)
         self.add_value('IRCamera.mean_opd', float(0.))
+        self.add_value('IRCamera.std_opd', float(np.nan))
         self.add_value('IRCamera.mean_opd_offset', float(0.), stored=True)
         self.add_value('IRCamera.tip', float(0.), stored=True)
         self.add_value('IRCamera.tilt', float(0.), stored=True)
@@ -140,6 +141,8 @@ class SharedData(object):
 
         self.add_array('Servo.PID_DA', np.array(config.DEFAULT_PID_DA).astype(config.DATA_DTYPE),
                        stored=True)
+
+        self.add_value('Servo.is_lost', True, stored=False)
         
         self.add_array('DAQ.piezos_level',
                        np.zeros(3, dtype=config.DAQ_PIEZO_LEVELS_DTYPE),

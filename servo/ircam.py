@@ -162,7 +162,7 @@ class DataObserver(NITLibrary.NITUserObserver):
         self.last_viewer_out_time = 0
         self.last_servo_out_time = 0
         self.stats_last_index = 0
-
+        self.last_mean_opd = None
         
         # Cache shared buffers for fast access (1 lookup per name)
         self.arr_last_frame = self.data['IRCamera.last_frame']
@@ -178,6 +178,7 @@ class DataObserver(NITLibrary.NITUserObserver):
         self.arr_last_angles= self.data['IRCamera.last_angles']
         self.arr_opds       = self.data['IRCamera.opds']
         self.arr_mean_opd   = self.data['IRCamera.mean_opd']
+        self.arr_std_opd    = self.data['IRCamera.std_opd']
         self.arr_mean_opd_buf = self.data['IRCamera.mean_opd_buffer']
         self.arr_tip        = self.data['IRCamera.tip']
         self.arr_tilt       = self.data['IRCamera.tilt']
@@ -354,9 +355,16 @@ class DataObserver(NITLibrary.NITUserObserver):
             opds -= self.data['IRCamera.mean_opd_offset']
             mean_opd = utils.mean(opds)
 
+            # check for lost
+            if self.last_mean_opd is not None:
+                if abs(mean_opd - self.last_mean_opd) > config.IRCAM_LOST_THRESHOLD:
+                    log.warning(f'potential lost detected: mean OPD jump from {self.last_mean_opd:.2f} nm to {mean_opd:.2f} nm')
+                    self.data['Servo.is_lost'][0] = float(True)
+            self.last_mean_opd = float(mean_opd)
+            
             
             t6 = time.perf_counter_ns()
-            if compute_servo_output:
+            if compute_servo_output:                
                 # Profiles & ROI to shared memory (no .flatten(), roi is contiguous)
                 self.arr_hprofile[:profile_len] = hprofile
                 self.arr_vprofile[:profile_len] = vprofile
@@ -378,6 +386,8 @@ class DataObserver(NITLibrary.NITUserObserver):
                 self.arr_mean_opd_buf[:min(
                     len(self.opd_deque), config.SERVO_BUFFER_SIZE)] = np.array(
                         self.opd_deque, dtype=config.FRAME_DTYPE)
+                
+                self.arr_std_opd[0] = float(np.std(self.opd_deque))
                 
                 self.tip_deque.appendleft(float(tip))
                 self.arr_tip_buf[:min(

@@ -34,6 +34,19 @@ class Viewer(core.Worker):
         style.configure('.', font=('Noto Sans', 14))
         style.theme_use('clam')
 
+        # danger (red): STOP
+        style.configure('Danger.TButton', foreground='white', background='#d32f2f')
+        style.map('Danger.TButton',
+                  background=[('disabled', '#ef9a9a'),
+                              ('active',   '#b71c1c'),
+                              ('!disabled','#d32f2f')])
+        # warn (orange): NORMALIZE, Reset TIP-TILT
+        style.configure('Warn.TButton', foreground='black', background='#f39c12')
+        style.map('Warn.TButton',
+                  background=[('disabled', '#f8c471'),
+                              ('active',   '#d68910'),
+                              ('!disabled','#f39c12')])
+        
         # state
         self._close_loop = False
         self.show_normalized = True
@@ -79,34 +92,88 @@ class Viewer(core.Worker):
         self.root.bind('<<Shutdown>>', lambda e: self._really_stop())
         self.root.after(100, self.refresh)
 
+    # --- small LED widget helpers ---
+    def _make_led(self, parent, diameter=12, on_color="#2ecc71", off_color="#c0392b"):
+        """Return (frame, canvas, circle_id, on_color, off_color)."""
+        frm = ttk.Frame(parent)
+        cv = tk.Canvas(frm, width=diameter, height=diameter, highlightthickness=0, bd=0)
+        cv.pack()
+        cid = cv.create_oval(1, 1, diameter-1, diameter-1, outline="", fill=off_color)
+        return (frm, cv, cid, on_color, off_color)
+
+    def _set_led(self, led_tuple, is_on: bool):
+        """Update LED fill color."""
+        try:
+            frm, cv, cid, on_color, off_color = led_tuple
+            cv.itemconfig(cid, fill=(on_color if is_on else off_color))
+        except Exception:
+            pass
+        
     # toolbar
     def _build_toolbar(self, root_main):
         toolbar = ttk.Frame(self.root)
         toolbar.pack(side=tk.TOP, fill=tk.X, pady=3, before=root_main)
+
         ttk.Label(toolbar, text='LUT:').pack(side=tk.LEFT, padx=5)
         self.lut_var = tk.StringVar(value=self.current_lut_name)
         choices = ['gray','viridis','inferno','magma','plasma','cividis','turbo','rainbow']
         cb = ttk.Combobox(toolbar, textvariable=self.lut_var, values=choices, state='readonly', width=10)
         cb.pack(side=tk.LEFT, padx=5)
         cb.bind('<<ComboboxSelected>>', self.on_lut_changed)
+
         self.shownorm_btn = ttk.Button(toolbar, text='Show Un-normalized', command=self.toggle_normalized)
         self.shownorm_btn.pack(side=tk.LEFT, padx=10)
+
         ttk.Button(toolbar, text='Reset Zoom', command=self.main_tab.reset_zoom).pack(side=tk.LEFT, padx=10)
-        ttk.Button(toolbar, text='STOP', command=lambda: self._set_event('Servo.stop')).pack(side=tk.RIGHT, padx=10)
+
+        # STOP (red)
+        self.stop_btn = ttk.Button(toolbar, text='STOP', style='Danger.TButton',
+                                   command=lambda: self._set_event('Servo.stop'))
+        self.stop_btn.pack(side=tk.RIGHT, padx=10)
+
+        # CLOSE/OPEN LOOP (toggle by state)
         self.close_loop_btn = ttk.Button(toolbar, text='CLOSE LOOP', command=self.toggle_close_loop)
         self.close_loop_btn.pack(side=tk.RIGHT, padx=10)
-        ttk.Button(toolbar, text='NORMALIZE', command=lambda: self._set_event('Servo.normalize')).pack(side=tk.RIGHT, padx=10)
-        ttk.Button(toolbar, text='MOVE to OPD', command=lambda: self._set_event('Servo.move_to_opd')).pack(side=tk.RIGHT, padx=10)
-        ttk.Button(toolbar, text='Reset TIP-TILT', command=self._reset_tiptilt).pack(side=tk.RIGHT, padx=10)
-        ttk.Button(toolbar, text='ROI MODE', command=self.toggle_roi_mode).pack(side=tk.RIGHT, padx=10)
-        ttk.Button(toolbar, text='Reset ZPD', command=lambda: self._set_event('Servo.reset_zpd')).pack(side=tk.RIGHT, padx=10)
 
+        # NORMALIZE (orange)
+        self.normalize_btn = ttk.Button(toolbar, text='NORMALIZE', style='Warn.TButton',
+                                        command=lambda: self._set_event('Servo.normalize'))
+        self.normalize_btn.pack(side=tk.RIGHT, padx=10)
+
+        self.move_to_opd_btn = ttk.Button(toolbar, text='MOVE to OPD',
+                                          command=lambda: self._set_event('Servo.move_to_opd'))
+        self.move_to_opd_btn.pack(side=tk.RIGHT, padx=10)
+
+        # Reset TIP-TILT (orange)
+        self.reset_tiptilt_btn = ttk.Button(toolbar, text='Reset TIP-TILT', style='Warn.TButton',
+                                            command=self._reset_tiptilt)
+        self.reset_tiptilt_btn.pack(side=tk.RIGHT, padx=10)
+
+        self.roi_mode_btn = ttk.Button(toolbar, text='ROI MODE', command=self.toggle_roi_mode)
+        self.roi_mode_btn.pack(side=tk.RIGHT, padx=10)
+
+        self.reset_zpd_btn = ttk.Button(toolbar, text='Reset ZPD',
+                                        command=lambda: self._set_event('Servo.reset_zpd'))
+        self.reset_zpd_btn.pack(side=tk.RIGHT, padx=10)
+
+        # initial sync (enable/disable according to current state)
+        self._update_commands_enabled()
+        
     # right column
     def _build_right_column(self):
         status = ttk.LabelFrame(self._right_col, text='Status', padding=10)
         status.pack(fill=tk.X, expand=False, pady=15)
         self.status_var = tk.StringVar(value='Idle')
         ttk.Label(status, textvariable=self.status_var).pack(anchor='w')
+        # --- LOST LED row ---
+        lost_row = ttk.Frame(status)
+        lost_row.pack(fill=tk.X, pady=(6, 0))
+        ttk.Label(lost_row, text='LOST:').pack(side=tk.LEFT)
+
+        self.led_lost = self._make_led(
+            lost_row, diameter=12, on_color="#c0392b", off_color="#2ecc71")
+        self.led_lost[0].pack(side=tk.LEFT, padx=6)
+        
         self._build_piezos(self._right_col)
         # Profile inputs
         prof = ttk.LabelFrame(self._right_col, text='Profile size', padding=10)
@@ -219,14 +286,14 @@ class Viewer(core.Worker):
         self.shownorm_btn.config(text='Show Un-normalized' if self.show_normalized else 'Show Normalized')
 
     def toggle_close_loop(self):
-        self._close_loop = not self._close_loop
-        if self._close_loop:
+        """Send the only valid loop-transition from current state."""
+        st = self._servo_state()
+        if st == ServoState.RUNNING:
             self._set_event('Servo.close_loop')
-            self.close_loop_btn.config(text='OPEN LOOP')
-        else:
+        elif st == ServoState.STAY_AT_OPD:
             self._set_event('Servo.open_loop')
-            self.close_loop_btn.config(text='CLOSE LOOP')
-
+        # labels & enablement will be updated by next refresh/_update_status()
+        
     def toggle_roi_mode(self):
         self.main_tab._roi_mode = not self.main_tab._roi_mode
         if self.main_tab._roi_mode:
@@ -384,6 +451,15 @@ class Viewer(core.Worker):
              f"frame drops: {drops}/{config.IRCAM_BUFFER_SIZE}")
         self.status_var.set('\n'.join(s))
 
+        # sync toolbar according to current state
+        self._update_commands_enabled()
+
+        try:
+            is_lost_val = int(self.data['Servo.is_lost'][0])
+        except Exception:
+            is_lost_val = 0
+        self._set_led(self.led_lost, bool(is_lost_val))
+
     # right: piezos
     def _build_piezos(self, parent):
         frame = ttk.LabelFrame(parent, text='Piezos', padding=10)
@@ -434,6 +510,58 @@ class Viewer(core.Worker):
     def _on_piezos_change(self, *_):
         self._write_piezos()
 
+    # --- state helpers ---
+    def _servo_state(self):
+        """Return ServoState or None."""
+        try:
+            return ServoState(self.data['Servo.state'][0])
+        except Exception:
+            return None
+
+    def _sync_close_loop_button(self, state):
+        """Set button label to the next valid action based on current state."""
+        if state == ServoState.STAY_AT_OPD:
+            self.close_loop_btn.config(text='OPEN LOOP')
+        else:
+            # default -> if RUNNING, we show 'CLOSE LOOP'; otherwise keep this label too
+            self.close_loop_btn.config(text='CLOSE LOOP')
+
+    def _set_enabled(self, widget, enabled: bool):
+        try:
+            if enabled:
+                widget.state(['!disabled'])
+            else:
+                widget.state(['disabled'])
+        except Exception:
+            pass
+
+    def _update_commands_enabled(self):
+        """Enable/disable toolbar buttons according to Servo.state."""
+        st = self._servo_state()
+        
+        # STOP: disabled when loop is closed (STAY_AT_OPD)
+        self._set_enabled(self.stop_btn, st != ServoState.STAY_AT_OPD)
+        
+        # CLOSE/OPEN LOOP enabled only in RUNNING or STAY_AT_OPD
+        can_loop_toggle = st in (ServoState.RUNNING, ServoState.STAY_AT_OPD)
+        self._set_enabled(self.close_loop_btn, bool(can_loop_toggle))
+        self._sync_close_loop_button(st)
+
+        # NORMALIZE only in RUNNING
+        self._set_enabled(self.normalize_btn, st == ServoState.RUNNING)
+
+        # MOVE to OPD only in STAY_AT_OPD
+        self._set_enabled(self.move_to_opd_btn, st == ServoState.STAY_AT_OPD)
+
+        # Reset TIP-TILT in RUNNING or STAY_AT_OPD
+        self._set_enabled(self.reset_tiptilt_btn, st in (ServoState.RUNNING, ServoState.STAY_AT_OPD))
+
+        # ROI MODE (ROI/FF) transitions defined from RUNNING
+        self._set_enabled(self.roi_mode_btn, st == ServoState.RUNNING)
+
+        # Reset ZPD only in RUNNING
+        self._set_enabled(self.reset_zpd_btn, st == ServoState.RUNNING)
+        
     # refresh loop
     def refresh(self):
         if self.stop_event and self.stop_event.is_set():
