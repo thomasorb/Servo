@@ -93,7 +93,8 @@ class Viewer(core.Worker):
         self.shownorm_btn.pack(side=tk.LEFT, padx=10)
         ttk.Button(toolbar, text='Reset Zoom', command=self.main_tab.reset_zoom).pack(side=tk.LEFT, padx=10)
         ttk.Button(toolbar, text='STOP', command=lambda: self._set_event('Servo.stop')).pack(side=tk.RIGHT, padx=10)
-        ttk.Button(toolbar, text='CLOSE LOOP', command=self.toggle_close_loop).pack(side=tk.RIGHT, padx=10)
+        self.close_loop_btn = ttk.Button(toolbar, text='CLOSE LOOP', command=self.toggle_close_loop)
+        self.close_loop_btn.pack(side=tk.RIGHT, padx=10)
         ttk.Button(toolbar, text='NORMALIZE', command=lambda: self._set_event('Servo.normalize')).pack(side=tk.RIGHT, padx=10)
         ttk.Button(toolbar, text='MOVE to OPD', command=lambda: self._set_event('Servo.move_to_opd')).pack(side=tk.RIGHT, padx=10)
         ttk.Button(toolbar, text='Reset TIP-TILT', command=self._reset_tiptilt).pack(side=tk.RIGHT, padx=10)
@@ -221,8 +222,10 @@ class Viewer(core.Worker):
         self._close_loop = not self._close_loop
         if self._close_loop:
             self._set_event('Servo.close_loop')
+            self.close_loop_btn.config(text='OPEN LOOP')
         else:
             self._set_event('Servo.open_loop')
+            self.close_loop_btn.config(text='CLOSE LOOP')
 
     def toggle_roi_mode(self):
         self.main_tab._roi_mode = not self.main_tab._roi_mode

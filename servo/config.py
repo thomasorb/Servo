@@ -28,6 +28,8 @@ PIEZO_V_MIN = 0.0
 PIEZO_V_MAX = 10.0
 OPD_TOLERANCE = 5.0  # nm
 PIEZO_MAX_OPD_DIFF = 5000 # nm
+PIEZO_DA_LOOP_MAX_V_DIFF = 0.05 # max V diff when looping to avoid lost
+PIEZO_DA_LOOP_UPDATE_TIME = 10.0 # s, time to update new DA base values
 
 SERVO_BUFFER_SIZE = 20 # for servo values buffering
 SERVO_NORMALIZE_REC_TIME = 1.0 # s, time to record values for normalization coeffs computation

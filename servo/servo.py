@@ -196,27 +196,27 @@ class Servo(StateMachine):
                 time.sleep(0.1)
             except Exception as e:
                 log.error('Exception at running:\n' + traceback.format_exc())
-                self.events('Servo.stop').set()
+                self.events['Servo.stop'].set()
                 
         
     def on_exit_running(self, _):
         log.info("<< RUNNING")
 
-    def get_pid_control(self, name):
+    def get_pid_control(self, name,
+                        out_min=config.PIEZO_V_MIN,
+                        out_max=config.PIEZO_V_MAX):
+
         dt = config.OPD_LOOP_TIME
         
-        pid_coeffs = self.data[f'Servo.PID_{name}'][:3]
+        pid_control = pid.PiezoPID(
+            self.data,
+            f'Servo.PID_{name}',
+            dt=dt,
+            out_min=out_min,
+            out_max=out_max,
+            deriv_filter_hz=1/dt/1000., kaw=5.0, deadband=0.0
+            )
         
-        pid_control = pid.PID(
-            pid.PIDConfig(
-                kp=pid_coeffs[0],
-                ki=pid_coeffs[1],
-                kd=pid_coeffs[2],
-                dt=dt,
-                out_min=config.PIEZO_V_MIN,
-                out_max=config.PIEZO_V_MAX,
-                deriv_filter_hz=1/dt/1000., kaw=5.0, deadband=0.0
-            ))
         return pid_control
 
     def on_enter_stay_at_opd(self, _):
@@ -229,32 +229,65 @@ class Servo(StateMachine):
         log.info(f"   OPD target: {opd_target} nm")
         log.info(f"   TIP target: {tip_target} radians")
         log.info(f"   TILT target: {tilt_target} radians")
+
+        da1_level_orig = self.data['DAQ.piezos_level'][1]
+        da2_level_orig = self.data['DAQ.piezos_level'][2]
         
+        last_update_time = time.time()
+        da1_buffer = list()
+        da2_buffer = list()
+        
+        pid_opd_control = self.get_pid_control('OPD')
+        pid_da1_control = self.get_pid_control(
+            'DA',
+            out_min=da1_level_orig - config.PIEZO_DA_LOOP_MAX_V_DIFF,
+            out_max=da1_level_orig + config.PIEZO_DA_LOOP_MAX_V_DIFF)
+        pid_da2_control = self.get_pid_control(
+            'DA',
+            out_min=da2_level_orig - config.PIEZO_DA_LOOP_MAX_V_DIFF,
+            out_max=da2_level_orig + config.PIEZO_DA_LOOP_MAX_V_DIFF)
         
         while True:
             try:
-                pid_opd_control = self.get_pid_control('OPD')
-                pid_da_control = self.get_pid_control('DA')
+                da1_buffer.append(self.data['DAQ.piezos_level'][1])
+                da2_buffer.append(self.data['DAQ.piezos_level'][2])
+                if time.time() - last_update_time > config.PIEZO_DA_LOOP_UPDATE_TIME:
+                    da1_level_orig = np.median(da1_buffer)
+                    da2_level_orig = np.median(da2_buffer)
+                    da1_buffer.clear()
+                    da2_buffer.clear()
+                    last_update_time = time.time()
+                
+        
+                opd = np.median(self.data['IRCamera.mean_opd_buffer'][:10])
 
-                opd = np.mean(self.data['IRCamera.mean_opd_buffer'][:10])
+                tip = np.median(self.data['IRCamera.tip_buffer'][:10])
 
-                tip = np.mean(self.data['IRCamera.tip_buffer'][:10])
-
-                tilt = np.mean(self.data['IRCamera.tilt_buffer'][:10])
+                tilt = np.median(self.data['IRCamera.tilt_buffer'][:10])
                 
                 if not np.isnan(opd):
+
+                    pid_opd_control.update_coeffs()
+
+                    pid_da1_control.update_config(
+                        out_min=da1_level_orig - config.PIEZO_DA_LOOP_MAX_V_DIFF,
+                        out_max=da1_level_orig + config.PIEZO_DA_LOOP_MAX_V_DIFF)
+                    
+                    pid_da2_control.update_config(
+                        out_min=da2_level_orig - config.PIEZO_DA_LOOP_MAX_V_DIFF,
+                        out_max=da2_level_orig + config.PIEZO_DA_LOOP_MAX_V_DIFF)
 
                     self.data['DAQ.piezos_level'][0] = pid_opd_control.update(
                         control=self.data['DAQ.piezos_level'][0],
                         setpoint=opd_target,
                         measurement=opd)
 
-                    self.data['DAQ.piezos_level'][1] = pid_da_control.update(
+                    self.data['DAQ.piezos_level'][1] = pid_da1_control.update(
                         control=self.data['DAQ.piezos_level'][1],
                         setpoint=tip_target,
                         measurement=tip)
 
-                    self.data['DAQ.piezos_level'][2] = pid_da_control.update(
+                    self.data['DAQ.piezos_level'][2] = pid_da2_control.update(
                         control=self.data['DAQ.piezos_level'][2],
                         setpoint=tilt_target,
                         measurement=tilt)
@@ -276,7 +309,7 @@ class Servo(StateMachine):
                 
             except KeyboardInterrupt:
                 log.error('Keyboard interrupt')
-                self.events('Servo.stop').set()
+                self.events['Servo.stop'].set()
                 break
 
     def on_exit_stay_at_opd(self, _):
@@ -450,7 +483,7 @@ class Servo(StateMachine):
         log.info("ZPD Reset")
         self.data['IRCamera.angles'][:4] = np.zeros(4, dtype=config.FRAME_DTYPE)
         self.data['IRCamera.last_angles'][:4] = np.zeros(4, dtype=config.FRAME_DTYPE)
-        self.data['IRCamera.mean_opd_offset'][0] = self.data['IRCamera.mean_opd'][0]
+        self.data['IRCamera.mean_opd_offset'][0] = float(0)#-self.data['IRCamera.mean_opd'][0]
         
         
     def _move_to_opd(self, _):
