@@ -104,87 +104,172 @@ def _rect_sum(I, r0, c0, r1, c1):
     c1p = c1 + 1
     return I[r1p, c1p] - I[r0p, c1p] - I[r1p, c0p] + I[r0p, c0p]
 
-@nb.njit(cache=True, fastmath=True)
-def _compute_profiles_integral_f32(a, x, y, w, l):
-    """
-    Integral-image-based profiles:
-    - Horizontal profile: mean of vertical strip width=w centered at y, for l rows around x.
-    - Vertical profile: mean of horizontal strip width=w centered at x, for l cols around y.
-    Handles borders by clamping and padding with NaNs to keep length l.
-    """
-    if (w & 1) or (l & 1):
-        raise ValueError("w and l must be even.")
+# @nb.njit(cache=True, fastmath=True)
+# def _compute_profiles_integral_f32(a, x, y, w, l):
+#     """
+#     Integral-image-based profiles:
+#     - Horizontal profile: mean of vertical strip width=w centered at y, for l rows around x.
+#     - Vertical profile: mean of horizontal strip width=w centered at x, for l cols around y.
+#     Handles borders by clamping and padding with NaNs to keep length l.
+#     """
+#     if (w & 1) or (l & 1):
+#         raise ValueError("w and l must be even.")
 
+#     nrows, ncols = a.shape
+#     hw = w // 2
+#     hl = l // 2
+
+#     I = _integral_image_f32(a)
+
+#     # Horizontal profile (vary rows, fixed vertical strip over columns)
+#     # rows [x-hl, x+hl), cols [y-hw, y+hw)
+#     r0_h = max(0, x - hl)
+#     r1_h = min(nrows, x + hl)
+#     c0_h = max(0, y - hw)
+#     c1_h = min(ncols, y + hw)
+#     hlen = r1_h - r0_h
+#     htmp = np.empty(hlen, dtype=np.float32)
+
+#     width_h = max(1, c1_h - c0_h)
+#     for i in range(hlen):
+#         r = r0_h + i
+#         s = _rect_sum(I, r, c0_h, r + 1, c1_h)  # 1-row tall strip
+#         htmp[i] = np.float32(s / width_h)
+
+#     hprofile = np.empty(l, dtype=np.float32)
+#     # fill with NaN
+#     for i in range(l):
+#         hprofile[i] = np.float32(np.nan)
+#     if (x - hl) < 0:
+#         for i in range(hlen):
+#             hprofile[i] = htmp[i]
+#     else:
+#         start = l - hlen
+#         for i in range(hlen):
+#             hprofile[start + i] = htmp[i]
+
+#     # Vertical profile (vary cols, fixed horizontal strip over rows)
+#     # rows [x-hw, x+hw), cols [y-hl, y+hl)
+#     r0_v = max(0, x - hw)
+#     r1_v = min(nrows, x + hw)
+#     c0_v = max(0, y - hl)
+#     c1_v = min(ncols, y + hl)
+#     vlen = c1_v - c0_v
+#     vtmp = np.empty(vlen, dtype=np.float32)
+
+#     height_v = max(1, r1_v - r0_v)
+#     for j in range(vlen):
+#         c = c0_v + j
+#         s = _rect_sum(I, r0_v, c, r1_v, c + 1)  # 1-col wide strip
+#         vtmp[j] = np.float32(s / height_v)
+
+#     vprofile = np.empty(l, dtype=np.float32)
+#     for i in range(l):
+#         vprofile[i] = np.float32(np.nan)
+#     if (y - hl) < 0:
+#         for j in range(vlen):
+#             vprofile[j] = vtmp[j]
+#     else:
+#         start = l - vlen
+#         for j in range(vlen):
+#             vprofile[start + j] = vtmp[j]
+
+#     return hprofile, vprofile
+
+# def compute_profiles(a, x, y, w, l, sanity_check=True, get_roi=True):
+#     """
+#     Drop-in accelerated version using integral images.
+#     Assumptions:
+#       - a is a 2D array, will be promoted to float32 contiguous for speed.
+#       - x, y, w, l as in the original implementation.
+#     Returns:
+#       - hprofile, vprofile (float32, shape=(l,))
+#       - roi: contiguous float32 subregion if requested (same convention as before).
+#     """
+#     assert not (w % 2), f"w should be even {w}"
+#     assert not (l % 2), f"l should be even {l}"
+
+#     if a.dtype != np.float32:
+#         a = a.astype(np.float32, copy=False)
+#     a_contig = np.ascontiguousarray(a, dtype=np.float32)
+
+#     hprofile, vprofile = _compute_profiles_integral_f32(a_contig, int(x), int(y), int(w), int(l))
+
+#     if sanity_check:
+#         assert len(hprofile) == l, "profile is taken too near the border given w and l"
+#         assert len(vprofile) == l, "profile is taken too near the border given w and l"
+
+#     roi = None
+#     if get_roi:
+#         hl = l // 2
+#         r0 = max(0, x - hl)
+#         r1 = min(x + hl, a_contig.shape[0])
+#         c0 = max(0, y - hl)
+#         c1 = min(y + hl, a_contig.shape[1])
+#         roi = np.ascontiguousarray(a_contig[r0:r1, c0:c1], dtype=np.float32)
+
+#     return hprofile, vprofile, roi
+
+@nb.njit(cache=True, fastmath=True)
+def _compute_profiles_local_f32(a, x, y, w, l):
+    """
+    Profils par calcul local (O(l*w)), sans image intégrale :
+      - hprofile[i] = moyenne sur la "bande verticale" (colonnes y-hw:y+hw-1) à la ligne r = x - hl + i
+      - vprofile[i] = moyenne sur la "bande horizontale" (lignes  x-hw:x+hw-1) à la colonne c = y - hl + i
+    Les positions hors image sont remplies par NaN pour conserver une longueur l.
+    """
     nrows, ncols = a.shape
     hw = w // 2
     hl = l // 2
-
-    I = _integral_image_f32(a)
-
-    # Horizontal profile (vary rows, fixed vertical strip over columns)
-    # rows [x-hl, x+hl), cols [y-hw, y+hw)
-    r0_h = max(0, x - hl)
-    r1_h = min(nrows, x + hl)
-    c0_h = max(0, y - hw)
-    c1_h = min(ncols, y + hw)
-    hlen = r1_h - r0_h
-    htmp = np.empty(hlen, dtype=np.float32)
-
-    width_h = max(1, c1_h - c0_h)
-    for i in range(hlen):
-        r = r0_h + i
-        s = _rect_sum(I, r, c0_h, r + 1, c1_h)  # 1-row tall strip
-        htmp[i] = np.float32(s / width_h)
-
     hprofile = np.empty(l, dtype=np.float32)
-    # fill with NaN
-    for i in range(l):
-        hprofile[i] = np.float32(np.nan)
-    if (x - hl) < 0:
-        for i in range(hlen):
-            hprofile[i] = htmp[i]
-    else:
-        start = l - hlen
-        for i in range(hlen):
-            hprofile[start + i] = htmp[i]
-
-    # Vertical profile (vary cols, fixed horizontal strip over rows)
-    # rows [x-hw, x+hw), cols [y-hl, y+hl)
-    r0_v = max(0, x - hw)
-    r1_v = min(nrows, x + hw)
-    c0_v = max(0, y - hl)
-    c1_v = min(ncols, y + hl)
-    vlen = c1_v - c0_v
-    vtmp = np.empty(vlen, dtype=np.float32)
-
-    height_v = max(1, r1_v - r0_v)
-    for j in range(vlen):
-        c = c0_v + j
-        s = _rect_sum(I, r0_v, c, r1_v, c + 1)  # 1-col wide strip
-        vtmp[j] = np.float32(s / height_v)
-
     vprofile = np.empty(l, dtype=np.float32)
+
+    # Horizontal profile
+    c0 = y - hw
+    c1 = y + hw
     for i in range(l):
-        vprofile[i] = np.float32(np.nan)
-    if (y - hl) < 0:
-        for j in range(vlen):
-            vprofile[j] = vtmp[j]
-    else:
-        start = l - vlen
-        for j in range(vlen):
-            vprofile[start + j] = vtmp[j]
+        r = x - hl + i
+        if 0 <= r < nrows:
+            cc0 = 0 if c0 < 0 else c0
+            cc1 = ncols if c1 > ncols else c1
+            width = cc1 - cc0
+            if width <= 0:
+                hprofile[i] = np.float32(np.nan)
+            else:
+                s = 0.0
+                for c in range(cc0, cc1):
+                    s += a[r, c]
+                hprofile[i] = np.float32(s / width)
+        else:
+            hprofile[i] = np.float32(np.nan)
+
+    # Vertical profile
+    r0 = x - hw
+    r1 = x + hw
+    for i in range(l):
+        c = y - hl + i
+        if 0 <= c < ncols:
+            rr0 = 0 if r0 < 0 else r0
+            rr1 = nrows if r1 > nrows else r1
+            height = rr1 - rr0
+            if height <= 0:
+                vprofile[i] = np.float32(np.nan)
+            else:
+                s = 0.0
+                for r in range(rr0, rr1):
+                    s += a[r, c]
+                vprofile[i] = np.float32(s / height)
+        else:
+            vprofile[i] = np.float32(np.nan)
 
     return hprofile, vprofile
 
-def compute_profiles(a, x, y, w, l, sanity_check=True, get_roi=True):
+def compute_profiles(a, x, y, w, l, get_roi=True):
     """
-    Drop-in accelerated version using integral images.
-    Assumptions:
-      - a is a 2D array, will be promoted to float32 contiguous for speed.
-      - x, y, w, l as in the original implementation.
-    Returns:
-      - hprofile, vprofile (float32, shape=(l,))
-      - roi: contiguous float32 subregion if requested (same convention as before).
+    Drop-in replacement de compute_profiles() basé sur calcul local.
+    - a est 2D ; converti/contigu en float32 si besoin (sans copie si déjà bon).
+    - x, y, w, l identiques à l’API actuelle.
+    Retourne (hprofile, vprofile, roi) pour compat.
     """
     assert not (w % 2), f"w should be even {w}"
     assert not (l % 2), f"l should be even {l}"
@@ -193,22 +278,16 @@ def compute_profiles(a, x, y, w, l, sanity_check=True, get_roi=True):
         a = a.astype(np.float32, copy=False)
     a_contig = np.ascontiguousarray(a, dtype=np.float32)
 
-    hprofile, vprofile = _compute_profiles_integral_f32(a_contig, int(x), int(y), int(w), int(l))
-
-    if sanity_check:
-        assert len(hprofile) == l, "profile is taken too near the border given w and l"
-        assert len(vprofile) == l, "profile is taken too near the border given w and l"
+    hprofile, vprofile = _compute_profiles_local_f32(a_contig, int(x), int(y), int(w), int(l))
 
     roi = None
     if get_roi:
         hl = l // 2
-        r0 = max(0, x - hl)
-        r1 = min(x + hl, a_contig.shape[0])
-        c0 = max(0, y - hl)
-        c1 = min(y + hl, a_contig.shape[1])
+        r0 = max(0, x - hl); r1 = min(x + hl, a_contig.shape[0])
+        c0 = max(0, y - hl); c1 = min(y + hl, a_contig.shape[1])
         roi = np.ascontiguousarray(a_contig[r0:r1, c0:c1], dtype=np.float32)
-
     return hprofile, vprofile, roi
+
 
 
 def validate_roi_length(length):

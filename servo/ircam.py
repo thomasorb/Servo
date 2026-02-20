@@ -3,6 +3,7 @@ import time
 import logging
 import traceback
 import collections
+import gc
 
 from . import NITLibrary_x64_382_py312 as NITLibrary
 
@@ -114,7 +115,7 @@ class IRCamera(core.Worker):
 
     def stop(self):
         self.dev.stop()      #Stop Capture
-        
+        gc.enable()
         log.info('capture stopped')
 
         
@@ -185,11 +186,6 @@ class DataObserver(NITLibrary.NITUserObserver):
         self.arr_tip_buf    = self.data['IRCamera.tip_buffer']
         self.arr_tilt_buf   = self.data['IRCamera.tilt_buffer']
         
-        
-        # Timer arrays (shared)
-        self.timers_ns      = self.data['IRCamera.timers_ns']      # int64[5]
-        self.timers_version = self.data['IRCamera.timers_version'] # int[1]
-
         # Servo coeffs
         self.arr_hnorm_min  = self.data['Servo.hnorm_min']
         self.arr_hnorm_max  = self.data['Servo.hnorm_max']
@@ -216,7 +212,9 @@ class DataObserver(NITLibrary.NITUserObserver):
         self.opd_deque = collections.deque(maxlen=config.SERVO_BUFFER_SIZE)
         self.tip_deque = collections.deque(maxlen=config.SERVO_BUFFER_SIZE)
         self.tilt_deque = collections.deque(maxlen=config.SERVO_BUFFER_SIZE)
-        
+
+        gc.freeze()
+        gc.disable()
 
     def onNewFrame(self, frame):
         try:
@@ -239,20 +237,21 @@ class DataObserver(NITLibrary.NITUserObserver):
                 self.times.fill(np.nan)
                 self.ids.fill(np.nan)
 
-            # --------- T0: viewer copy (and potential resize) ----------
-            t0 = time.perf_counter_ns()
-            copied_viewer = False
+            compute_servo_output = (frame_time - self.last_servo_out_time > config.IRCAM_SERVO_OUTPUT_TIME)
+
+            frame_data = frame.data()  # native order, no transpose
+    
+            # --------- T0: viewer copy (and potential resize) ----------                
             if frame_time - self.last_viewer_out_time > config.IRCAM_VIEWER_OUTPUT_TIME:
                 self.last_viewer_out_time = frame_time
-                src2d = frame.data()  # camera's 2D array
 
                 # Ensure last_frame has correct size (dim may change occasionally)
-                expected_size = src2d.shape[0] * src2d.shape[1]
+                expected_size = frame_data.shape[0] * frame_data.shape[1]
                 # If needed, recreate last_frame and roi to the new full-frame size
                 if expected_size != self.data['IRCamera.frame_size'][0]:
                     # Update metadata
-                    self.data['IRCamera.frame_dimx'][0] = int(src2d.shape[0])
-                    self.data['IRCamera.frame_dimy'][0] = int(src2d.shape[1])
+                    self.data['IRCamera.frame_dimx'][0] = int(frame_data.shape[0])
+                    self.data['IRCamera.frame_dimy'][0] = int(frame_data.shape[1])
                     self.data['IRCamera.frame_size'][0] = int(expected_size)
 
                     # Recreate SHM segments for last_frame and roi (same names)
@@ -266,15 +265,9 @@ class DataObserver(NITLibrary.NITUserObserver):
                 # Copy transposed view directly (no flatten temp)
                 # Keep the transpose to preserve viewer orientation as before.
                 # Fast path: write column-by-column to 1D (Numba kernel)
-                utils.copy_transpose_to_1d(src2d, self.arr_last_frame[:expected_size])
-                copied_viewer = True
+                utils.copy_transpose_to_1d(frame_data, self.arr_last_frame[:expected_size])
                 
-            t1 = time.perf_counter_ns()
-            t_copy_viewer = t1 - t0
-
-            # --------- T1: compute profiles ----------
-            t2 = time.perf_counter_ns()
-            compute_servo_output = (frame_time - self.last_servo_out_time > config.IRCAM_SERVO_OUTPUT_TIME)
+            
             if bool(self.data['IRCamera.full_output'][0]):
                 compute_servo_output = True
                 
@@ -294,23 +287,14 @@ class DataObserver(NITLibrary.NITUserObserver):
             iwid = int(self.data['IRCamera.profile_width'][0])
 
             # Compute profiles + ROI (Numba accelerated)
-            # NOTE: your existing pipeline feeds a transposed frame for profiles,
-            # we keep that behavior to avoid changing math conventions.
-            # profiles & ROI without feeding a transposed frame
-            # We pass the native camera 2D array (row-major). To preserve the exact
-            # horizontal/vertical cuts you had when using a transposed input,
-            # we swap indices (ix, iy) accordingly.
-            src2d = frame.data()  # native order, no transpose
 
             # When the code previously used `a.T`, (ix, iy) in that transposed space
             # correspond to (iy, ix) in the native space.
-            vprofile, hprofile, roi = utils.compute_profiles(src2d, iy, ix, iwid, profile_len, get_roi=True)
+            vprofile, hprofile, roi = utils.compute_profiles(frame_data, iy, ix, iwid, profile_len, get_roi=True)
 
-            t3 = time.perf_counter_ns()
-            t_profiles = t3 - t2
-
-            # --------- T2: normalization + levels + angles/opd ----------
-            t4 = time.perf_counter_ns()
+            
+            # # --------- T2: normalization + levels + angles/opd ----------
+                            
             self.hmin = self.arr_hnorm_min[:profile_len]
             self.hmax = self.arr_hnorm_max[:profile_len]
             self.vmin = self.arr_vnorm_min[:profile_len]
@@ -338,9 +322,7 @@ class DataObserver(NITLibrary.NITUserObserver):
                 self.arr_vprof_norm[:profile_len] = utils.normalize_profile(
                     vprofile, self.vmin, self.vmax, inplace=False)
 
-            t5 = time.perf_counter_ns()
-            t_norm_levels_opd = t5 - t4
-
+                
             # Levels (3 positions per axis)
             for i in range(3):
                 self.hlevels_ws[i] = utils.normalize_and_compute_profile_level(
@@ -361,10 +343,10 @@ class DataObserver(NITLibrary.NITUserObserver):
                     log.warning(f'potential lost detected: mean OPD jump from {self.last_mean_opd:.2f} nm to {mean_opd:.2f} nm')
                     self.data['Servo.is_lost'][0] = float(True)
             self.last_mean_opd = float(mean_opd)
+                        
             
-            
-            t6 = time.perf_counter_ns()
-            if compute_servo_output:                
+            if compute_servo_output:
+                
                 # Profiles & ROI to shared memory (no .flatten(), roi is contiguous)
                 self.arr_hprofile[:profile_len] = hprofile
                 self.arr_vprofile[:profile_len] = vprofile
@@ -398,23 +380,11 @@ class DataObserver(NITLibrary.NITUserObserver):
                 self.arr_tilt_buf[:min(
                     len(self.tilt_deque), config.SERVO_BUFFER_SIZE)] = np.array(
                         self.tilt_deque, dtype=config.FRAME_DTYPE)
+
+
                 
             self.arr_last_angles[:4] = self.angles_ws
 
-            t7 = time.perf_counter_ns()
-            t_write_servo = t7 - t6
-
-            end_total = time.perf_counter_ns()
-            t_total = end_total - start_total
-            utils.publish_timers_ns(
-                self.timers_ns,
-                self.timers_version,
-                np.int64(t_copy_viewer),
-                np.int64(t_profiles),
-                np.int64(t_norm_levels_opd),
-                np.int64(t_write_servo),
-                np.int64(t_total)
-            )
 
         except Exception as e:
             log.error(f'error on new frame: {e}')
