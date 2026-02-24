@@ -40,8 +40,24 @@ conda env create -f servo.yml
 git clone https://github.com/thomasorb/Servo.git
 conda activate servo
 cd Servo
-python servo.py install
+python servo.py install # for simple user but not for developper
 ```
+
+### developper only
+
+Add module
+```
+# add to file: ~/miniconda3/envs/servo/lib/python3.12/site-packages/conda.pth
+/path/to/Servo
+```
+
+Add command
+```
+ln -s /absolute/path/to/Servo/bin/servo ~/miniconda3/envs/servo/
+```
+
+
+
 
 ### Install 
 
