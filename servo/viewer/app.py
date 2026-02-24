@@ -445,10 +445,16 @@ class Viewer(core.Worker):
             drops = int(self.data['IRCamera.lost_frames'][0])
         except Exception:
             drops = 0
-        s = (f"mean OPD: {mean_opd:.0f} nm",
-             f" (std): {std_opd:.1f} nm",
-             f"fps: {fps/1e3:.3f} kHz",
-             f"frame drops: {drops}/{config.IRCAM_BUFFER_SIZE}")
+
+        try:
+            opd_target = float(self.data['Servo.opd_target'][0])
+        except Exception:
+            opd_target = float('nan')
+
+            
+        s = (f"mean OPD: {utils.fwformat(mean_opd, 9)} nm | (std): {utils.fwformat(std_opd, 5, decimals=1)} nm",
+             f"OPD target: {utils.fwformat(opd_target, 9)} nm",
+             f"fps: {utils.fwformat(fps/1e3, 6, decimals=1)} kHz | frame drops: {drops}/{config.IRCAM_BUFFER_SIZE}")
         self.status_var.set('\n'.join(s))
 
         # sync toolbar according to current state
@@ -547,8 +553,8 @@ class Viewer(core.Worker):
         self._set_enabled(self.close_loop_btn, bool(can_loop_toggle))
         self._sync_close_loop_button(st)
 
-        # NORMALIZE only in RUNNING
-        self._set_enabled(self.normalize_btn, st == ServoState.RUNNING)
+        # NORMALIZE only in RUNNING or STAY_AT_OPD
+        self._set_enabled(self.normalize_btn, st == (ServoState.RUNNING or ServoState.STAY_AT_OPD))
 
         # MOVE to OPD only in STAY_AT_OPD
         self._set_enabled(self.move_to_opd_btn, st == ServoState.STAY_AT_OPD)

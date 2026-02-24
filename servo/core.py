@@ -156,6 +156,9 @@ class SharedData(object):
         self.add_value('SerialComm.state', float(0), stored=False)
         self.add_value('Viewer.state', float(0), stored=False)
 
+        self.add_array('SerialComm.last_status_frame', np.zeros(config.SERIAL_STATUS_FRAME_SIZE, dtype=np.uint8), stored=False)
+        
+
     def add_array(self, name, array, stored=False):
         if stored:
             self.stored_names.append(name)

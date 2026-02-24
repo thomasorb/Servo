@@ -125,6 +125,8 @@ class Servo(StateMachine):
                 ServoState.RUNNING, action=self._start),
             (ServoState.RUNNING, ServoEvent.NORMALIZE): Transition(
                 ServoState.RUNNING, action=self._normalize),
+            (ServoState.STAY_AT_OPD, ServoEvent.NORMALIZE): Transition(
+                ServoState.STAY_AT_OPD, action=self._normalize),
             (ServoState.RUNNING, ServoEvent.STOP): Transition(
                 ServoState.STOPPED, action=self._stop),
             (ServoState.STAY_AT_OPD, ServoEvent.MOVE_TO_OPD): Transition(
@@ -497,23 +499,34 @@ class Servo(StateMachine):
         opd_target = self.data['Servo.opd_target'][0]
         
         log.info(f"   OPD target: {opd_target} nm")
-        log.info('moving with Nexline')
-        
-        self.events['Nexline.move'].set()
-        
-        time.sleep(0.3) # wait for event dispatch
+
+        # moving with Nexline until close enough for piezo reach
         while True:
-            if NexlineState(self.data['Nexline.state']).name != 'MOVING':
+            opd_diff = np.abs(self.data['Servo.opd_target'][0] - self.data['IRCamera.mean_opd'][0])
+            if opd_diff > config.PIEZO_MAX_OPD_DIFF/2.:
+                log.info(f'opd difference {opd_diff} too large for piezo reach, moving with Nexline')
+        
+                self.events['Nexline.move'].set()
+        
+                time.sleep(0.1) # wait for event dispatch
+                while True: # wait for nexline move to finish
+                    if NexlineState(self.data['Nexline.state']).name != 'MOVING':
+                        break
+                    time.sleep(0.1)
+            else:
                 break
-            time.sleep(0.1)
+
+            if self.events['Servo.stop'].is_set():
+                return
 
         opd_diff = np.abs(self.data['Servo.opd_target'][0] - self.data['IRCamera.mean_opd'][0])
-        if  opd_diff > config.PIEZO_MAX_OPD_DIFF:
+        if opd_diff > config.PIEZO_MAX_OPD_DIFF:
             log.error(f'opd difference too large for piezo reach: {opd_diff}')
             return
+        
         log.info('moving with piezos')
             
-
+        # Loop until OPD target is reached within tolerance, or stop event is set
         while True:
 
             pid_opd_control = self.get_pid_control('OPD')
@@ -533,15 +546,17 @@ class Servo(StateMachine):
                 break
 
             if self.events['Servo.stop'].is_set():
-                  break
+                  return
                                   
             time.sleep(config.OPD_LOOP_TIME)
-
+            
 
         log.info(f"OPD piezo at {opd}")
 
     def _close_loop(self, _):
         log.info("Closing loop on target OPD")
+        self.data['Servo.opd_target'][0] = self.data['IRCamera.mean_opd'][0]
+        log.info(f"OPD target: {self.data['Servo.opd_target'][0]} nm")
 
     def _open_loop(self, _):
         log.info("Opening loop")

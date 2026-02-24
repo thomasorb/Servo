@@ -5,6 +5,36 @@ import numba as nb
 
 from . import config
 
+def fwformat(
+    value,
+    width: int,
+    fill: str = ' ',
+    align: str = '>',      # '<' left, '>' right, '^' center, '=' sign left & digits aligned
+    decimals: int | None = None,
+    sign: str = '-',       # '-' default, '+' always show, ' ' space for positive
+    thousands: bool = False,
+    truncate: bool = False
+) -> str:
+    """Return a number formatted to a fixed width."""
+    if decimals is not None:
+        type_char = 'f'
+        precision = f'.{decimals}'
+    else:
+        type_char = 'g'
+        precision = ''
+
+    thousands_part = ',' if thousands else ''
+    fmt_spec = f"{fill}{align}{sign}{width}{thousands_part}{precision}{type_char}"
+
+    try:
+        out = format(value, fmt_spec)
+    except (ValueError, TypeError):
+        out = str(value)
+
+    if len(out) > width:
+        return out[:width] if truncate else out
+    return out
+
 def simulate_sin(n):
     x = np.linspace(0, np.random.uniform(3,5)*np.pi, n)
     y = np.sin(x + np.random.uniform(0,1)*np.pi) + 1 + np.random.uniform(0, 2)

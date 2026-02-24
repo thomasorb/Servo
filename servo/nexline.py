@@ -43,9 +43,9 @@ class Nexline(core.Worker, StateMachine):
         
         self.pidevice = pipython.GCSDevice('E-712')
         try:
-            #devices = self.pidevice.EnumerateUSB()
-            #for i, device in enumerate(devices):
-            #    print('{} - {}'.format(i, device))
+            devices = self.pidevice.EnumerateUSB()
+            for i, device in enumerate(devices):
+                log.info('{} - {}'.format(i, device))
             self.pidevice.ConnectUSB(serialnum='120009499')
             
             if not self.pidevice.connected:

@@ -52,6 +52,7 @@ DEFAULT_PID_DA = [-1e-1, 1e-4, 1.0]
 SERIAL_PORT = "/dev/serial/by-id/usb-Prolific_Technology_Inc._USB-Serial_Controller-if00-port0"
 SERIAL_BAUDRATE = 9600 # bps
 SERIAL_STATUS_RATE = 100 # Hz
+SERIAL_STATUS_FRAME_SIZE = 9 # number of bytes in the status frame (header 3 + payload 5 + checksum 1)
 
 SERVO_EVENTS = (
     'normalize',
