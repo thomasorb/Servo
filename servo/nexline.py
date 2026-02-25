@@ -25,6 +25,8 @@ class Nexline(core.Worker, StateMachine):
         table = {
             (NexlineState.IDLE,    NexlineEvent.START): Transition(
                 NexlineState.RUNNING, action=self._start),
+            (NexlineState.IDLE, NexlineEvent.STOP): Transition(
+                NexlineState.STOPPED, action=self._stop),
             (NexlineState.RUNNING, NexlineEvent.STOP): Transition(
                 NexlineState.STOPPED, action=self._stop),
             (NexlineState.RUNNING, NexlineEvent.MOVE): Transition(
@@ -50,7 +52,7 @@ class Nexline(core.Worker, StateMachine):
             
             if not self.pidevice.connected:
                 log.error('error at usb connection')
-                self.stop()
+                self.dispatch(NexlineEvent.STOP)
 
             pipython.pitools.waitonready(self.pidevice)
     
@@ -59,7 +61,7 @@ class Nexline(core.Worker, StateMachine):
             self.print_pos()
         except Exception as e:
             log.error(f'error during init: {e}')
-            self.stop()
+            self.dispatch(NexlineEvent.STOP)
 
     # Hooks (facultatif)
     def on_enter_running(self, _):

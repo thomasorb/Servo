@@ -23,87 +23,53 @@ log = logging.getLogger(__name__)
 
 import subprocess
 
-def _elevate_ircam_rt(pid: int, cpu: int = 2, prio: int = 80):
-    """
-    Elevate only the given PID to SCHED_FIFO (prio) and pin it to a specific CPU.
-    Requires sudo privileges for chrt & taskset. No effect on parent process.
-    """
-    # Pin to CPU (logical index; CPU 2 means the 3rd logical core)
-    try:
-        subprocess.run(["sudo", "taskset", "-pc", str(cpu), str(pid)], check=True)
-    except Exception as e:
-        log.error(f"Failed to set CPU affinity for IRCam PID {pid}: {e}")
-
-    # Set real-time scheduling policy to SCHED_FIFO with priority 'prio'
-    try:
-        subprocess.run(["sudo", "chrt", "-f", "-p", str(prio), str(pid)], check=True)
-    except Exception as e:
-        log.error(f"Failed to set SCHED_FIFO for IRCam PID {pid}: {e}")
-        
-        
 def worker_process(queue, data, WorkerClass, events, priority=None, kwargs=None):
     """
-    Subprocess that:
-    - configures logging
-    - instantiates and runs the worker
-    - guarantees worker.stop() is called
+    Subprocess worker bootstrap:
+      - configure logging
+      - apply scheduling (if IRCamera)
+      - instantiate and run worker
+      - guarantee worker.stop() is called
     """
-    
     if kwargs is None:
         kwargs = {}
 
-    # (existing) optional nice
-    
-    # if priority is not None:
-    #     try:
-    #         psutil.Process().nice(priority)
-    #     except:
-    #         log.error(f"Failed to set nice level {priority} for {WorkerClass.__name__}: {e}")
-
-    
-    # --- Hardening for IRCam only (no sudo needed here) ---
-    # if WorkerClass.__name__ == "IRCamera":
-    #     # 1) Lock pages in RAM to avoid major page faults during callbacks
-    #     try:
-    #         import ctypes, gc
-    #         libc = ctypes.CDLL("libc.so.6", use_errno=True)
-    #         MCL_CURRENT, MCL_FUTURE = 1, 2
-    #         libc.mlockall(MCL_CURRENT | MCL_FUTURE)
-    #         # 2) Disable GC in the RT-ish child; do collections off-RT if needed
-    #         gc.disable()
-    #     except Exception:
-    #         pass
-
-    _stop_requested = {"flag": False}
-
-    def _child_handle_signal(signum, frame):
-        # Avoid re-entrancy
-        if not _stop_requested["flag"]:
-            _stop_requested["flag"] = True
-            # Best-effort: set the worker stop event known by parent
-            try:
-                stop_event_name = f"{WorkerClass.__name__}.stop"
-                if events.get(stop_event_name):
-                    events[stop_event_name].set()
-            except Exception:
-                pass
-
-    signal.signal(signal.SIGINT, _child_handle_signal)
-    signal.signal(signal.SIGTERM, _child_handle_signal)
-
     logger.configure_worker_logging(queue=queue, redirect_std=True)
     log = logging.getLogger(f"servo.worker.{WorkerClass.__name__}")
-    log.info("Worker started")
+    
+    niceness = None
+    cpus = None
 
+    if isinstance(priority, dict):
+        niceness = priority.get("niceness", config.SERVO_DEFAULT_NICENESS)
+        cpus = priority.get("cpus", None)
+
+    # CPU affinity 
+    if cpus is not None:
+        try:
+            p = psutil.Process()
+            p.cpu_affinity(cpus)
+            log.info(f"Set CPU affinity to CPUs {cpus} for {WorkerClass.__name__}")
+        except Exception as e:
+            log.warning(f"Failed to set CPU affinity to {cpus} for {WorkerClass.__name__}: {e}")
+        
+    # Process priority (nice level)
+    if niceness is not None:
+        try:
+            p = psutil.Process()
+            p.nice(niceness)
+            log.info(f"Set nice level to {niceness} for {WorkerClass.__name__}")
+        except Exception as e:
+            log.warning(f"Failed to set nice level {niceness} for {WorkerClass.__name__}: {e}")
+    
+    # Instantiate and run the worker
     worker = None
     try:
-        worker = WorkerClass(data, events, **(kwargs or {}))
-        worker.run()           # <- may raise BaseException on signal/KeyboardInterrupt
+        worker = WorkerClass(data, events, **kwargs)
+        worker.run()
     except BaseException as be:
-        # Catch KeyboardInterrupt and any termination to ensure stop() is called
-        log.error(f"Worker terminating due to {type(be).__name__}: {be}")
-        log.error("Traceback:\n" + traceback.format_exc())
-        # Re-raise after stop() in finally if you want parent to see non-zero exit
+        log.error(f"Worker crashed: {type(be).__name__}: {be}")
+        log.error("Traceback:\n%s", traceback.format_exc())
         raise
     finally:
         if worker is not None:
@@ -111,9 +77,9 @@ def worker_process(queue, data, WorkerClass, events, priority=None, kwargs=None)
                 worker.stop()
             except Exception:
                 log.error("Error in worker.stop()", exc_info=True)
+
         log.info("Worker terminated cleanly")
-
-
+        
 class Servo(StateMachine):
     def __init__(self, mode='calib', noviewer=False, nocam=False):
         self.mode = mode
@@ -326,7 +292,11 @@ class Servo(StateMachine):
     def start_worker(self, WorkerClass, priority, **kwargs):
         stop_event_name = f"{WorkerClass.__name__}.stop"
         self.events[stop_event_name] = self.event_manager.Event()
-    
+
+        if priority is None:
+            log.info(f"Starting worker {WorkerClass.__name__} with default priority")
+            priority={"niceness": config.SERVO_DEFAULT_NICENESS, "cpus": [1]}
+            
         worker = multiprocessing.Process(
             target=worker_process,
             args=(self.queue, self.data, WorkerClass, self.events, priority, kwargs),
@@ -351,13 +321,16 @@ class Servo(StateMachine):
 
         # start ir camera
         if not self.nocam:
-            self.start_worker(ircam.IRCamera, -20)
-
+            # Real-time RT priority 75, pinned to CPU 2
+            self.start_worker(
+                ircam.IRCamera,
+                priority={"niceness": config.SERVO_MAX_NICENESS, "cpus": [2]},
+            )
         # start nexline
-        self.start_worker(nexline.Nexline, 0)
+        self.start_worker(nexline.Nexline, None)
         
         # start piezos
-        self.start_worker(piezo.DAQ, 0)
+        self.start_worker(piezo.DAQ, None)
 
         # start com
         self.start_worker(
@@ -377,7 +350,7 @@ class Servo(StateMachine):
                     if time.time() - timeout_start > 5:
                         log.error("Timeout waiting for IRCamera initialization; starting viewer anyway")
                         break
-            self.start_worker(viewer.Viewer, 10)
+            self.start_worker(viewer.Viewer, priority={"niceness": config.SERVO_LOW_NICENESS, "cpus": [0]})
 
 
     def _publish_state(self, state=None):
@@ -572,7 +545,8 @@ class Servo(StateMachine):
         w = self.data['IRCamera.profile_len'][0]
         x = self.data['IRCamera.profile_x'][0]
         y = self.data['IRCamera.profile_y'][0]
-        self.start_worker(ircam.IRCamera, -20,
+        self.start_worker(ircam.IRCamera,
+                          priority={"niceness": config.SERVO_MAX_NICENESS, "cpus": [2]},
                           frame_shape=(w, w),
                           frame_center=(x, y),
                           roi_mode=True)

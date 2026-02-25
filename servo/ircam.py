@@ -16,7 +16,7 @@ log = logging.getLogger(__name__)
 class IRCamera(core.Worker):
 
     def __init__(self, data, events, frame_shape=None, frame_center=None, roi_mode=False):
-
+        
         super().__init__(data, events)
 
         self.roi_mode = bool(roi_mode)
@@ -185,6 +185,7 @@ class DataObserver(NITLibrary.NITUserObserver):
         self.arr_tilt       = self.data['IRCamera.tilt']
         self.arr_tip_buf    = self.data['IRCamera.tip_buffer']
         self.arr_tilt_buf   = self.data['IRCamera.tilt_buffer']
+        self.arr_full_output = self.data['IRCamera.full_output']
         
         # Servo coeffs
         self.arr_hnorm_min  = self.data['Servo.hnorm_min']
@@ -209,6 +210,11 @@ class DataObserver(NITLibrary.NITUserObserver):
         self.xpixels_list_pos = None
         self.ypixels_list_pos = None
 
+        self.ix = None
+        self.iy = None
+        self.profile_len = None
+        self.iwid = None
+
         self.opd_deque = collections.deque(maxlen=config.SERVO_BUFFER_SIZE)
         self.tip_deque = collections.deque(maxlen=config.SERVO_BUFFER_SIZE)
         self.tilt_deque = collections.deque(maxlen=config.SERVO_BUFFER_SIZE)
@@ -218,8 +224,6 @@ class DataObserver(NITLibrary.NITUserObserver):
 
     def onNewFrame(self, frame):
         try:
-            start_total = time.perf_counter_ns()
-
             index = int(frame.id()) - 1
             frame_time = time.time()
             self.times[index % self.times.size] = frame_time
@@ -236,8 +240,6 @@ class DataObserver(NITLibrary.NITUserObserver):
                 self.data['IRCamera.lost_frames'][0] = int(np.sum(diff_ids > 1))
                 self.times.fill(np.nan)
                 self.ids.fill(np.nan)
-
-            compute_servo_output = (frame_time - self.last_servo_out_time > config.IRCAM_SERVO_OUTPUT_TIME)
 
             frame_data = frame.data()  # native order, no transpose
     
@@ -266,39 +268,43 @@ class DataObserver(NITLibrary.NITUserObserver):
                 # Keep the transpose to preserve viewer orientation as before.
                 # Fast path: write column-by-column to 1D (Numba kernel)
                 utils.copy_transpose_to_1d(frame_data, self.arr_last_frame[:expected_size])
+
+                # Determine profile geometry
+                if self.roi_mode:
+                    self.ix, self.iy = self.frame_shape // 2
+                    self.profile_len = min(self.frame_shape)
+                else:
+                    self.ix = self.data['IRCamera.profile_x'][0] - self.frame_position[0]
+                    self.iy = self.data['IRCamera.profile_y'][0] - self.frame_position[1]
+                    self.profile_len = int(self.data['IRCamera.profile_len'][0])
+                if self.profile_len > np.min(self.frame_shape):
+                    self.profile_len = int(np.min(self.frame_shape))
+                self.iwid = int(self.data['IRCamera.profile_width'][0])
+
                 
-            
-            if bool(self.data['IRCamera.full_output'][0]):
+            if bool(self.arr_full_output[0]):
                 compute_servo_output = True
-                
+            else:
+                compute_servo_output = (frame_time - self.last_servo_out_time > config.IRCAM_SERVO_OUTPUT_TIME)
+
             if compute_servo_output:
                 self.last_servo_out_time = frame_time
 
-            # Determine profile geometry
-            if self.roi_mode:
-                ix, iy = self.frame_shape // 2
-                profile_len = min(self.frame_shape)
-            else:
-                ix = self.data['IRCamera.profile_x'][0] - self.frame_position[0]
-                iy = self.data['IRCamera.profile_y'][0] - self.frame_position[1]
-                profile_len = int(self.data['IRCamera.profile_len'][0])
-            if profile_len > np.min(self.frame_shape):
-                profile_len = int(np.min(self.frame_shape))
-            iwid = int(self.data['IRCamera.profile_width'][0])
 
             # Compute profiles + ROI (Numba accelerated)
 
             # When the code previously used `a.T`, (ix, iy) in that transposed space
             # correspond to (iy, ix) in the native space.
-            vprofile, hprofile, roi = utils.compute_profiles(frame_data, iy, ix, iwid, profile_len, get_roi=True)
+            vprofile, hprofile, roi = utils.compute_profiles(
+                frame_data, self.iy, self.ix, self.iwid, self.profile_len, get_roi=True)
 
             
             # # --------- T2: normalization + levels + angles/opd ----------
                             
-            self.hmin = self.arr_hnorm_min[:profile_len]
-            self.hmax = self.arr_hnorm_max[:profile_len]
-            self.vmin = self.arr_vnorm_min[:profile_len]
-            self.vmax = self.arr_vnorm_max[:profile_len]
+            self.hmin = self.arr_hnorm_min[:self.profile_len]
+            self.hmax = self.arr_hnorm_max[:self.profile_len]
+            self.vmin = self.arr_vnorm_min[:self.profile_len]
+            self.vmax = self.arr_vnorm_max[:self.profile_len]
 
             if compute_servo_output:
 
@@ -317,19 +323,26 @@ class DataObserver(NITLibrary.NITUserObserver):
                     self.arr_vlev_pos[:3] = self.ypixels_list_pos
 
                 # Normalized profiles (Numba kernels)
-                self.arr_hprof_norm[:profile_len] = utils.normalize_profile(
+                self.arr_hprof_norm[:self.profile_len] = utils.normalize_profile(
                     hprofile, self.hmin, self.hmax, inplace=False)
-                self.arr_vprof_norm[:profile_len] = utils.normalize_profile(
+                self.arr_vprof_norm[:self.profile_len] = utils.normalize_profile(
                     vprofile, self.vmin, self.vmax, inplace=False)
 
                 
             # Levels (3 positions per axis)
-            for i in range(3):
-                self.hlevels_ws[i] = utils.normalize_and_compute_profile_level(
-                    hprofile, self.hmin, self.hmax, self.xpixels_list[i])
-                self.vlevels_ws[i] = utils.normalize_and_compute_profile_level(
-                    vprofile, self.vmin, self.vmax, self.ypixels_list[i])
+            # for i in range(3):
+            #     self.hlevels_ws[i] = utils.normalize_and_compute_profile_level(
+            #         hprofile, self.hmin, self.hmax, self.xpixels_list[i])
+            #     self.vlevels_ws[i] = utils.normalize_and_compute_profile_level(
+            #         vprofile, self.vmin, self.vmax, self.ypixels_list[i])
 
+            self.hlevels_ws[:] = utils.batch_normalize_and_levels(
+                hprofile, self.hmin, self.hmax, self.xpixels_list
+            )
+            self.vlevels_ws[:] = utils.batch_normalize_and_levels(
+                vprofile, self.vmin, self.vmax, self.ypixels_list
+            )
+            
             # Angles & OPD
             self.angles_ws[:2] = utils.compute_angles(self.hlevels_ws, self.arr_hellipse[:4], self.arr_last_angles[:2])
             self.angles_ws[2:] = utils.compute_angles(self.vlevels_ws, self.arr_vellipse[:4], self.arr_last_angles[2:])
@@ -348,8 +361,8 @@ class DataObserver(NITLibrary.NITUserObserver):
             if compute_servo_output:
                 
                 # Profiles & ROI to shared memory (no .flatten(), roi is contiguous)
-                self.arr_hprofile[:profile_len] = hprofile
-                self.arr_vprofile[:profile_len] = vprofile
+                self.arr_hprofile[:self.profile_len] = hprofile
+                self.arr_vprofile[:self.profile_len] = vprofile
                 self.arr_roi[:roi.size] = roi.ravel()
 
                 # Levels & OPDs
@@ -380,8 +393,6 @@ class DataObserver(NITLibrary.NITUserObserver):
                 self.arr_tilt_buf[:min(
                     len(self.tilt_deque), config.SERVO_BUFFER_SIZE)] = np.array(
                         self.tilt_deque, dtype=config.FRAME_DTYPE)
-
-
                 
             self.arr_last_angles[:4] = self.angles_ws
 

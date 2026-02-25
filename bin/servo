@@ -28,6 +28,4 @@ else
   source "/home/thomas/miniconda3/bin/activate" servo
 fi
 
-# --- Launch the parent process normally (non-RT) ---
-# Only the IRCam child will be elevated to RT inside servo.py after fork.
 exec "$(which python)" "$TARGET_SCRIPT" "$@"

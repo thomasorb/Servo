@@ -9,6 +9,7 @@ LASER_ANGLE = 25 # angle of the laser in degrees
 IRCAM_DEFAULT_EXPOSURE_TIME = '1us'
 IRCAM_SERVO_OUTPUT_TIME = 0.03 #s
 IRCAM_VIEWER_OUTPUT_TIME = 0.1 #s
+
 IRCAM_BUFFER_SIZE = 100
 IRCAM_LOST_THRESHOLD = CALIBRATION_LASER_WAVELENGTH / 2 * 0.8 # nm (80% of lambda/2 to be safe)
 
@@ -39,6 +40,10 @@ SERVO_BUFFER_SIZE = 20 # for servo values buffering
 SERVO_NORMALIZE_REC_TIME = 1.0 # s, time to record values for normalization coeffs computation
 SERVO_NORMALIZE_REC_SIZE = 10000 # s, time to record values for normalization coeffs computation
 VIEWER_BUFFER_SIZE = 1000 # for viewer servo values buffering
+SERVO_DEFAULT_NICENESS = 0
+SERVO_MAX_NICENESS = -20
+SERVO_LOW_NICENESS = 10
+
 
 VIEWER_ELLIPSE_DRAW_BUFFER_SIZE = 100
 
