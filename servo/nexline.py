@@ -25,6 +25,8 @@ class Nexline(core.Worker, StateMachine):
         table = {
             (NexlineState.IDLE,    NexlineEvent.START): Transition(
                 NexlineState.RUNNING, action=self._start),
+            (NexlineState.IDLE, NexlineEvent.STOP): Transition(
+                NexlineState.STOPPED, action=self._stop),
             (NexlineState.RUNNING, NexlineEvent.STOP): Transition(
                 NexlineState.STOPPED, action=self._stop),
             (NexlineState.RUNNING, NexlineEvent.MOVE): Transition(
@@ -43,14 +45,14 @@ class Nexline(core.Worker, StateMachine):
         
         self.pidevice = pipython.GCSDevice('E-712')
         try:
-            #devices = self.pidevice.EnumerateUSB()
-            #for i, device in enumerate(devices):
-            #    print('{} - {}'.format(i, device))
+            devices = self.pidevice.EnumerateUSB()
+            for i, device in enumerate(devices):
+                log.info('{} - {}'.format(i, device))
             self.pidevice.ConnectUSB(serialnum='120009499')
             
             if not self.pidevice.connected:
                 log.error('error at usb connection')
-                self.stop()
+                self.dispatch(NexlineEvent.STOP)
 
             pipython.pitools.waitonready(self.pidevice)
     
@@ -59,7 +61,7 @@ class Nexline(core.Worker, StateMachine):
             self.print_pos()
         except Exception as e:
             log.error(f'error during init: {e}')
-            self.stop()
+            self.dispatch(NexlineEvent.STOP)
 
     # Hooks (facultatif)
     def on_enter_running(self, _):
@@ -95,8 +97,15 @@ class Nexline(core.Worker, StateMachine):
         return opd / 2 * np.cos(np.deg2rad(config.LASER_ANGLE))
         
     def loop_once(self):
-        self.poll()
-        time.sleep(0.1)
+        try:
+            self.poll()
+            
+            #if self.state is NexlineState.STOPPED:
+            #    return
+            time.sleep(0.1)
+        except KeyboardInterrupt:
+            log.error('Keyboard interrupt')
+            self.events('Nexline.stop').set()
 
     def _stop(self, _):
         log.info('Stopping Nexline')

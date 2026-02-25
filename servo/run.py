@@ -1,5 +1,6 @@
 import logging
 import psutil
+import traceback
 
 from .servo import Servo, ServoEvent
 log = logging.getLogger(__name__)
@@ -8,15 +9,13 @@ log = logging.getLogger(__name__)
 def run(**kwargs):
 
     try:
-        psutil.Process().nice(0)  # privilégier uniquement ce worker
-    except psutil.AccessDenied:
-        log.warning('priority of the process could not be changed (Acces Denied)')
+        servo = Servo(**kwargs)
+        # start servo
+        servo.dispatch(ServoEvent.START)
 
-    servo = Servo(**kwargs)
+    except KeyboardInterrupt:
+        log.error(f'error during run: {traceback.format_exc()}')
 
-    # start servo
-    servo.dispatch(ServoEvent.START)
-    
         
 
 

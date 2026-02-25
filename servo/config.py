@@ -1,12 +1,17 @@
 import numpy as np
 
+CALIBRATION_LASER_WAVELENGTH = 1550 # nm
+LASER_ANGLE = 25 # angle of the laser in degrees
+
 #ROI_SHAPE = np.array((32, 32), dtype=int)
 #ROI_SIZE = np.prod(ROI_SHAPE)
 
 IRCAM_DEFAULT_EXPOSURE_TIME = '1us'
-IRCAM_SERVO_OUTPUT_TIME = 0.5 #s
-IRCAM_VIEWER_OUTPUT_TIME = 0.5 #s
+IRCAM_SERVO_OUTPUT_TIME = 0.05 #s
+IRCAM_VIEWER_OUTPUT_TIME = 0.2 #s
+
 IRCAM_BUFFER_SIZE = 100
+IRCAM_LOST_THRESHOLD = CALIBRATION_LASER_WAVELENGTH / 2 * 0.8 # nm (80% of lambda/2 to be safe)
 
 FRAME_DTYPE = np.float32
 DATA_DTYPE = np.float32
@@ -18,7 +23,7 @@ DEFAULT_FRAME_POSITION = np.array((0, 0), dtype=int) # first column, first line
 MIN_ROI_SHAPE = 32
 
 DAQ_PIEZO_LEVELS_DTYPE = np.float32
-DAQ_PIEZO_CHANNELS = [0, 2, 4] # OPD, DA-1, DA-2
+DAQ_PIEZO_CHANNELS = [0, 4, 2] # OPD, DA-1, DA-2
 DAQ_CHANGE_SPEED = 5 # level change per second
 DAQ_LOOP_TIME = 0.01
 DAQ_MAX_LEVEL_CHANGE = DAQ_CHANGE_SPEED * DAQ_LOOP_TIME
@@ -28,9 +33,17 @@ PIEZO_V_MIN = 0.0
 PIEZO_V_MAX = 10.0
 OPD_TOLERANCE = 5.0  # nm
 PIEZO_MAX_OPD_DIFF = 5000 # nm
+PIEZO_DA_LOOP_MAX_V_DIFF = 0.05 # max V diff when looping to avoid lost
+PIEZO_DA_LOOP_UPDATE_TIME = 10.0 # s, time to update new DA base values
 
 SERVO_BUFFER_SIZE = 20 # for servo values buffering
+SERVO_NORMALIZE_REC_TIME = 1.0 # s, time to record values for normalization coeffs computation
+SERVO_NORMALIZE_REC_SIZE = 10000 # s, time to record values for normalization coeffs computation
 VIEWER_BUFFER_SIZE = 1000 # for viewer servo values buffering
+SERVO_DEFAULT_NICENESS = 0
+SERVO_MAX_NICENESS = -20
+SERVO_LOW_NICENESS = 10
+
 
 VIEWER_ELLIPSE_DRAW_BUFFER_SIZE = 100
 
@@ -41,9 +54,10 @@ DEFAULT_PROFILE_POSITION = np.array((DEFAULT_PROFILE_LEN//2, DEFAULT_PROFILE_LEN
 DEFAULT_PID_OPD = [1e-4, 5e-4, 1.0]
 DEFAULT_PID_DA = [-1e-1, 1e-4, 1.0]
 
-SERIAL_PORT = "/dev/ttyUSB0"
+SERIAL_PORT = "/dev/serial/by-id/usb-Prolific_Technology_Inc._USB-Serial_Controller-if00-port0"
 SERIAL_BAUDRATE = 9600 # bps
 SERIAL_STATUS_RATE = 100 # Hz
+SERIAL_STATUS_FRAME_SIZE = 9 # number of bytes in the status frame (header 3 + payload 5 + checksum 1)
 
 SERVO_EVENTS = (
     'normalize',
@@ -66,9 +80,6 @@ NEXLINE_EVENTS = (
 # use only this part of the profiles for normalization coeffs computation
 NORMALIZATION_LEN_RATIO = 0.7
 
-
-CALIBRATION_LASER_WAVELENGTH = 1550 # nm
-LASER_ANGLE = 25 # angle of the laser in degrees
 NEXLINE_CHANNEL = 1
 NEXLINE_STEP_SIZE = 5 # um in mechanical path difference
 NEXLINE_TIMEOUT = 300 # s

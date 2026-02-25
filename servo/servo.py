@@ -4,6 +4,7 @@ import traceback
 import psutil
 import logging
 import numpy as np
+import signal
 
 from . import ircam
 from . import core
@@ -18,54 +19,67 @@ from . import com
 
 from .fsm import StateMachine, Transition, ServoState, ServoEvent, NexlineState
 
-
 log = logging.getLogger(__name__)
 
+import subprocess
 
 def worker_process(queue, data, WorkerClass, events, priority=None, kwargs=None):
     """
-    Subprocess that:
-      - configures logging
-      - instantiates and runs the worker
-      - guarantees worker.stop() is called
+    Subprocess worker bootstrap:
+      - configure logging
+      - apply scheduling (if IRCamera)
+      - instantiate and run worker
+      - guarantee worker.stop() is called
     """
     if kwargs is None:
         kwargs = {}
-    
-    # Optionally adjust process priority
-    if priority is not None:
-        try:
-            psutil.Process().nice(priority)
-        except psutil.AccessDenied:
-            pass
 
-    # Configure logging for workers
     logger.configure_worker_logging(queue=queue, redirect_std=True)
     log = logging.getLogger(f"servo.worker.{WorkerClass.__name__}")
-
-    log.info("Worker started")
-
-    worker = None
     
+    niceness = None
+    cpus = None
+
+    if isinstance(priority, dict):
+        niceness = priority.get("niceness", config.SERVO_DEFAULT_NICENESS)
+        cpus = priority.get("cpus", None)
+
+    # CPU affinity 
+    if cpus is not None:
+        try:
+            p = psutil.Process()
+            p.cpu_affinity(cpus)
+            log.info(f"Set CPU affinity to CPUs {cpus} for {WorkerClass.__name__}")
+        except Exception as e:
+            log.warning(f"Failed to set CPU affinity to {cpus} for {WorkerClass.__name__}: {e}")
+        
+    # Process priority (nice level)
+    if niceness is not None:
+        try:
+            p = psutil.Process()
+            p.nice(niceness)
+            log.info(f"Set nice level to {niceness} for {WorkerClass.__name__}")
+        except Exception as e:
+            log.warning(f"Failed to set nice level {niceness} for {WorkerClass.__name__}: {e}")
+    
+    # Instantiate and run the worker
+    worker = None
     try:
-        # Instantiate user worker
         worker = WorkerClass(data, events, **kwargs)
         worker.run()
-
-    except Exception:
-        log.error(f"Unhandled exception inside worker:\n {traceback.format_exc()}")
-
+    except BaseException as be:
+        log.error(f"Worker crashed: {type(be).__name__}: {be}")
+        log.error("Traceback:\n%s", traceback.format_exc())
+        raise
     finally:
         if worker is not None:
             try:
                 worker.stop()
             except Exception:
-                log.error(f"Error in worker.stop():\n {traceback.format_exc()}")
+                log.error("Error in worker.stop()", exc_info=True)
 
         log.info("Worker terminated cleanly")
-
-
-
+        
 class Servo(StateMachine):
     def __init__(self, mode='calib', noviewer=False, nocam=False):
         self.mode = mode
@@ -77,6 +91,8 @@ class Servo(StateMachine):
                 ServoState.RUNNING, action=self._start),
             (ServoState.RUNNING, ServoEvent.NORMALIZE): Transition(
                 ServoState.RUNNING, action=self._normalize),
+            (ServoState.STAY_AT_OPD, ServoEvent.NORMALIZE): Transition(
+                ServoState.STAY_AT_OPD, action=self._normalize),
             (ServoState.RUNNING, ServoEvent.STOP): Transition(
                 ServoState.STOPPED, action=self._stop),
             (ServoState.STAY_AT_OPD, ServoEvent.MOVE_TO_OPD): Transition(
@@ -89,8 +105,8 @@ class Servo(StateMachine):
                 ServoState.RUNNING, action=self._roi_mode),
             (ServoState.RUNNING, ServoEvent.FULL_FRAME_MODE): Transition(
                 ServoState.RUNNING, action=self._full_frame_mode),
-            (ServoState.RUNNING, ServoEvent.RESET_ZPD): Transition(
-                ServoState.RUNNING, action=self._reset_zpd),
+            (ServoState.STAY_AT_OPD, ServoEvent.RESET_ZPD): Transition(
+                ServoState.STAY_AT_OPD, action=self._reset_zpd),
             
         }
         super().__init__(ServoState.IDLE, table)
@@ -109,6 +125,22 @@ class Servo(StateMachine):
 
         self.data = core.SharedData()
 
+
+    def install_signal_handlers(self):
+        """
+        Install SIGINT/SIGTERM handlers to trigger a clean shutdown via _stop transition.
+        """
+        def _handle_signal(signum, frame):
+            log.warning(f"Received signal {signum}, initiating graceful stop...")
+            try:
+                # Set the FSM event that triggers the STOP transition
+                self.dispatch(ServoEvent.STOP)
+            except Exception:
+                log.error("Error dispatching STOP on signal", exc_info=True)
+
+        # Parent process only: install handlers
+        signal.signal(signal.SIGINT, _handle_signal)
+        signal.signal(signal.SIGTERM, _handle_signal)
         
     def poll(self):
         evs = self.events
@@ -120,6 +152,7 @@ class Servo(StateMachine):
 
     # Hooks (facultatif)
     def on_enter_running(self, _):
+        self.install_signal_handlers()
         log.info(">> RUNNING")
         # running loop
         while True:
@@ -129,33 +162,35 @@ class Servo(StateMachine):
                 if self.state is ServoState.STOPPED:
                     break
                 time.sleep(0.1)
-            except KeyboardInterrupt:
-                log.error('Keyboard interrupt')
-                self.events('Servo.stop').set()
+            except Exception as e:
+                log.error('Exception at running:\n' + traceback.format_exc())
+                self.events['Servo.stop'].set()
                 
         
     def on_exit_running(self, _):
         log.info("<< RUNNING")
 
-    def get_pid_control(self, name):
+    def get_pid_control(self, name,
+                        out_min=config.PIEZO_V_MIN,
+                        out_max=config.PIEZO_V_MAX):
+
         dt = config.OPD_LOOP_TIME
         
-        pid_coeffs = self.data[f'Servo.PID_{name}'][:3]
+        pid_control = pid.PiezoPID(
+            self.data,
+            f'Servo.PID_{name}',
+            dt=dt,
+            out_min=out_min,
+            out_max=out_max,
+            deriv_filter_hz=1/dt/1000., kaw=5.0, deadband=0.0
+            )
         
-        pid_control = pid.PID(
-            pid.PIDConfig(
-                kp=pid_coeffs[0],
-                ki=pid_coeffs[1],
-                kd=pid_coeffs[2],
-                dt=dt,
-                out_min=config.PIEZO_V_MIN,
-                out_max=config.PIEZO_V_MAX,
-                deriv_filter_hz=1/dt/1000., kaw=5.0, deadband=0.0
-            ))
         return pid_control
 
     def on_enter_stay_at_opd(self, _):
         log.info(">> STAY_AT_OPD")
+
+        self.data['Servo.is_lost'][0] = float(False)
         
         opd_target = self.data['Servo.opd_target'][0]
         tip_target = self.data['Servo.tip_target'][0]
@@ -164,32 +199,65 @@ class Servo(StateMachine):
         log.info(f"   OPD target: {opd_target} nm")
         log.info(f"   TIP target: {tip_target} radians")
         log.info(f"   TILT target: {tilt_target} radians")
+
+        da1_level_orig = self.data['DAQ.piezos_level'][1]
+        da2_level_orig = self.data['DAQ.piezos_level'][2]
         
+        last_update_time = time.time()
+        da1_buffer = list()
+        da2_buffer = list()
+        
+        pid_opd_control = self.get_pid_control('OPD')
+        pid_da1_control = self.get_pid_control(
+            'DA',
+            out_min=da1_level_orig - config.PIEZO_DA_LOOP_MAX_V_DIFF,
+            out_max=da1_level_orig + config.PIEZO_DA_LOOP_MAX_V_DIFF)
+        pid_da2_control = self.get_pid_control(
+            'DA',
+            out_min=da2_level_orig - config.PIEZO_DA_LOOP_MAX_V_DIFF,
+            out_max=da2_level_orig + config.PIEZO_DA_LOOP_MAX_V_DIFF)
         
         while True:
             try:
-                pid_opd_control = self.get_pid_control('OPD')
-                pid_da_control = self.get_pid_control('DA')
+                da1_buffer.append(self.data['DAQ.piezos_level'][1])
+                da2_buffer.append(self.data['DAQ.piezos_level'][2])
+                if time.time() - last_update_time > config.PIEZO_DA_LOOP_UPDATE_TIME:
+                    da1_level_orig = np.median(da1_buffer)
+                    da2_level_orig = np.median(da2_buffer)
+                    da1_buffer.clear()
+                    da2_buffer.clear()
+                    last_update_time = time.time()
+                
+        
+                opd = np.median(self.data['IRCamera.mean_opd_buffer'][:10])
 
-                opd = np.mean(self.data['IRCamera.mean_opd_buffer'][:10])
+                tip = np.median(self.data['IRCamera.tip_buffer'][:10])
 
-                tip = np.mean(self.data['IRCamera.tip_buffer'][:10])
-
-                tilt = np.mean(self.data['IRCamera.tilt_buffer'][:10])
+                tilt = np.median(self.data['IRCamera.tilt_buffer'][:10])
                 
                 if not np.isnan(opd):
+
+                    pid_opd_control.update_coeffs()
+
+                    pid_da1_control.update_config(
+                        out_min=da1_level_orig - config.PIEZO_DA_LOOP_MAX_V_DIFF,
+                        out_max=da1_level_orig + config.PIEZO_DA_LOOP_MAX_V_DIFF)
+                    
+                    pid_da2_control.update_config(
+                        out_min=da2_level_orig - config.PIEZO_DA_LOOP_MAX_V_DIFF,
+                        out_max=da2_level_orig + config.PIEZO_DA_LOOP_MAX_V_DIFF)
 
                     self.data['DAQ.piezos_level'][0] = pid_opd_control.update(
                         control=self.data['DAQ.piezos_level'][0],
                         setpoint=opd_target,
                         measurement=opd)
 
-                    self.data['DAQ.piezos_level'][1] = pid_da_control.update(
+                    self.data['DAQ.piezos_level'][1] = pid_da1_control.update(
                         control=self.data['DAQ.piezos_level'][1],
                         setpoint=tip_target,
                         measurement=tip)
 
-                    self.data['DAQ.piezos_level'][2] = pid_da_control.update(
+                    self.data['DAQ.piezos_level'][2] = pid_da2_control.update(
                         control=self.data['DAQ.piezos_level'][2],
                         setpoint=tilt_target,
                         measurement=tilt)
@@ -202,16 +270,19 @@ class Servo(StateMachine):
                 self.poll()
 
                 if self.events['Servo.stop'].is_set():
-                      break
+                    break
 
                 if self.events['Servo.open_loop'].is_set():
-                      break
+                    break
+
+                if self.data['Servo.is_lost'][0] == float(True):
+                    break
 
                 time.sleep(config.OPD_LOOP_TIME)
                 
             except KeyboardInterrupt:
                 log.error('Keyboard interrupt')
-                self.events('Servo.stop').set()
+                self.events['Servo.stop'].set()
                 break
 
     def on_exit_stay_at_opd(self, _):
@@ -221,13 +292,25 @@ class Servo(StateMachine):
     def start_worker(self, WorkerClass, priority, **kwargs):
         stop_event_name = f"{WorkerClass.__name__}.stop"
         self.events[stop_event_name] = self.event_manager.Event()
-        
-        worker = multiprocessing.Process(target=worker_process,
-                                         args=(self.queue, self.data, WorkerClass,
-                                               self.events, priority, kwargs))
+
+        if priority is None:
+            log.info(f"Starting worker {WorkerClass.__name__} with default priority")
+            priority={"niceness": config.SERVO_DEFAULT_NICENESS, "cpus": [1]}
+            
+        worker = multiprocessing.Process(
+            target=worker_process,
+            args=(self.queue, self.data, WorkerClass, self.events, priority, kwargs),
+            name=f"worker.{WorkerClass.__name__}"
+        )
         self.workers.append((worker, stop_event_name))
         worker.start()
 
+        # # >>> Only for IRCam: elevate child to RT on CPU 2 <<<
+        # if WorkerClass is ircam.IRCamera:
+        #     if worker.pid is not None:
+        #         _elevate_ircam_rt(worker.pid, cpu=2, prio=80)
+        #     else:
+        #         log.error("IRCam worker PID unavailable; cannot elevate to RT")
         
     # Actions
     def _start(self, _):
@@ -238,13 +321,16 @@ class Servo(StateMachine):
 
         # start ir camera
         if not self.nocam:
-            self.start_worker(ircam.IRCamera, -20)
-
+            # Real-time RT priority 75, pinned to CPU 2
+            self.start_worker(
+                ircam.IRCamera,
+                priority={"niceness": config.SERVO_MAX_NICENESS, "cpus": [2]},
+            )
         # start nexline
-        self.start_worker(nexline.Nexline, 0)
+        self.start_worker(nexline.Nexline, None)
         
         # start piezos
-        self.start_worker(piezo.DAQ, 0)
+        self.start_worker(piezo.DAQ, None)
 
         # start com
         self.start_worker(
@@ -257,10 +343,14 @@ class Servo(StateMachine):
         # start viewer
         if not self.noviewer:
             if not self.nocam:
+                timeout_start = time.time()
                 while True:
                     time.sleep(0.1)
                     if self.data['IRCamera.initialized'][0]: break
-            self.start_worker(viewer.Viewer, 10)
+                    if time.time() - timeout_start > 5:
+                        log.error("Timeout waiting for IRCamera initialization; starting viewer anyway")
+                        break
+            self.start_worker(viewer.Viewer, priority={"niceness": config.SERVO_LOW_NICENESS, "cpus": [0]})
 
 
     def _publish_state(self, state=None):
@@ -286,22 +376,40 @@ class Servo(StateMachine):
         frame_size = self.data['IRCamera.frame_size'][0]
         
         def piezo_goto(val, rec=False):
-        
-            self.data['DAQ.piezos_level'][0] = np.array(
-                val, dtype=config.DAQ_PIEZO_LEVELS_DTYPE)
 
-            while True:
-                self.poll()
-
-                if self.data['DAQ.piezos_level_actual'][0] == val:
-                    break
-                if self.events['Servo.stop'].is_set():
-                    break
-                if rec:
+            if not rec:
+                self.data['DAQ.piezos_level'][0] = np.array(
+                    val, dtype=config.DAQ_PIEZO_LEVELS_DTYPE)
+            else:
+                self.data['IRCamera.full_output'][0] = float(1.0) # force full output for normalization recording
+                _goto_start_time = time.time()
+                _goto_start_level = self.data['DAQ.piezos_level_actual'][0]
+                levels = np.linspace(_goto_start_level, val, config.SERVO_NORMALIZE_REC_SIZE)
+                for ilevel in levels:
+                    
+                    self.data['DAQ.piezos_level'][0] = np.array(
+                        ilevel, dtype=config.DAQ_PIEZO_LEVELS_DTYPE)
                     rec_hprofiles.append(np.copy(self.data['IRCamera.hprofile'][:profile_len]))
                     rec_vprofiles.append(np.copy(self.data['IRCamera.vprofile'][:profile_len]))
                     rec_rois.append(np.copy(self.data['IRCamera.roi'][:profile_len**2]).reshape((
                         profile_len, profile_len)))
+                    
+                    time.sleep(config.SERVO_NORMALIZE_REC_TIME / config.SERVO_NORMALIZE_REC_SIZE)
+
+                self.data['IRCamera.full_output'][0] = float(0.)
+                
+                self.data['DAQ.piezos_level'][0] = np.array(
+                    val, dtype=config.DAQ_PIEZO_LEVELS_DTYPE)
+
+                
+            
+            while True:
+                self.poll()
+                if self.data['DAQ.piezos_level_actual'][0] == val:
+                    break
+                if self.events['Servo.stop'].is_set():
+                    break
+                
                 
             log.info(f"OPD piezo at {self.data['DAQ.piezos_level_actual'][0]}")
 
@@ -343,16 +451,19 @@ class Servo(StateMachine):
         
         self.data['Servo.vellipse_norm_coeffs'][:4] = vellipse_norm_coeffs.astype(
             config.DATA_DTYPE)
-        
-        np.save('hprofiles.npy', np.array(rec_hprofiles))
-        np.save('vprofiles.npy', np.array(rec_vprofiles))
-        np.save('rois.npy', np.array(rec_rois))
+
+        try:
+            np.save('hprofiles.npy', np.array(rec_hprofiles))
+            np.save('vprofiles.npy', np.array(rec_vprofiles))
+            np.save('rois.npy', np.array(rec_rois))
+        except Exception as e:
+            log.error(f"Failed to save normalization data: {e}")
 
     def _reset_zpd(self, _):
         log.info("ZPD Reset")
         self.data['IRCamera.angles'][:4] = np.zeros(4, dtype=config.FRAME_DTYPE)
         self.data['IRCamera.last_angles'][:4] = np.zeros(4, dtype=config.FRAME_DTYPE)
-        self.data['IRCamera.mean_opd_offset'][0] = self.data['IRCamera.mean_opd'][0]
+        self.data['IRCamera.mean_opd_offset'][0] = float(0)#-self.data['IRCamera.mean_opd'][0]
         
         
     def _move_to_opd(self, _):
@@ -361,23 +472,34 @@ class Servo(StateMachine):
         opd_target = self.data['Servo.opd_target'][0]
         
         log.info(f"   OPD target: {opd_target} nm")
-        log.info('moving with Nexline')
-        
-        self.events['Nexline.move'].set()
-        
-        time.sleep(0.3) # wait for event dispatch
+
+        # moving with Nexline until close enough for piezo reach
         while True:
-            if NexlineState(self.data['Nexline.state']).name != 'MOVING':
+            opd_diff = np.abs(self.data['Servo.opd_target'][0] - self.data['IRCamera.mean_opd'][0])
+            if opd_diff > config.PIEZO_MAX_OPD_DIFF/2.:
+                log.info(f'opd difference {opd_diff} too large for piezo reach, moving with Nexline')
+        
+                self.events['Nexline.move'].set()
+        
+                time.sleep(0.1) # wait for event dispatch
+                while True: # wait for nexline move to finish
+                    if NexlineState(self.data['Nexline.state']).name != 'MOVING':
+                        break
+                    time.sleep(0.1)
+            else:
                 break
-            time.sleep(0.1)
+
+            if self.events['Servo.stop'].is_set():
+                return
 
         opd_diff = np.abs(self.data['Servo.opd_target'][0] - self.data['IRCamera.mean_opd'][0])
-        if  opd_diff > config.PIEZO_MAX_OPD_DIFF:
+        if opd_diff > config.PIEZO_MAX_OPD_DIFF:
             log.error(f'opd difference too large for piezo reach: {opd_diff}')
             return
+        
         log.info('moving with piezos')
             
-
+        # Loop until OPD target is reached within tolerance, or stop event is set
         while True:
 
             pid_opd_control = self.get_pid_control('OPD')
@@ -397,15 +519,17 @@ class Servo(StateMachine):
                 break
 
             if self.events['Servo.stop'].is_set():
-                  break
+                  return
                                   
             time.sleep(config.OPD_LOOP_TIME)
-
+            
 
         log.info(f"OPD piezo at {opd}")
 
     def _close_loop(self, _):
         log.info("Closing loop on target OPD")
+        self.data['Servo.opd_target'][0] = self.data['IRCamera.mean_opd'][0]
+        log.info(f"OPD target: {self.data['Servo.opd_target'][0]} nm")
 
     def _open_loop(self, _):
         log.info("Opening loop")
@@ -421,7 +545,8 @@ class Servo(StateMachine):
         w = self.data['IRCamera.profile_len'][0]
         x = self.data['IRCamera.profile_x'][0]
         y = self.data['IRCamera.profile_y'][0]
-        self.start_worker(ircam.IRCamera, -20,
+        self.start_worker(ircam.IRCamera,
+                          priority={"niceness": config.SERVO_MAX_NICENESS, "cpus": [2]},
                           frame_shape=(w, w),
                           frame_center=(x, y),
                           roi_mode=True)

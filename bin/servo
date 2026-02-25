@@ -1,22 +1,31 @@
 #!/usr/bin/env bash
+# Strict bash mode: exit on error (-e), undefined vars (-u), and fail on pipeline error (pipefail)
+set -euo pipefail
 
-# Resolve the real path of this script (including symlink resolution)
+# --- Resolve the real path of this script (including symlink resolution) ---
 SOURCE="${BASH_SOURCE[0]}"
-
 while [ -L "$SOURCE" ]; do
-    TARGET="$(readlink "$SOURCE")"
-    if [[ "$TARGET" == /* ]]; then
-        SOURCE="$TARGET"
-    else
-        DIR="$(dirname "$SOURCE")"
-        SOURCE="$DIR/$TARGET"
-    fi
+  TARGET="$(readlink "$SOURCE")"
+  if [[ "$TARGET" == /* ]]; then
+    SOURCE="$TARGET"
+  else
+    DIR="$(dirname "$SOURCE")"
+    SOURCE="$DIR/$TARGET"
+  fi
 done
-
 SCRIPT_DIR="$(cd -- "$(dirname -- "$SOURCE")" && pwd)"
 TARGET_SCRIPT="$SCRIPT_DIR/run_servo.py"
 
-source /home/thomas/miniconda3/bin/activate servo
+# --- Activate Conda environment (bash) ---
+# Use conda's recommended activation for non-interactive shells
+if [ -f "/home/thomas/miniconda3/etc/profile.d/conda.sh" ]; then
+  # shellcheck disable=SC1091
+  source "/home/thomas/miniconda3/etc/profile.d/conda.sh"
+  conda activate servo
+else
+  # fallback to legacy activate
+  # shellcheck disable=SC1091
+  source "/home/thomas/miniconda3/bin/activate" servo
+fi
 
-# Run with high priority
-sudo nice -n -20 "$(which python)" "$TARGET_SCRIPT" "$@"
+exec "$(which python)" "$TARGET_SCRIPT" "$@"

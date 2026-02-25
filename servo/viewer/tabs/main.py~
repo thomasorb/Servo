@@ -1,0 +1,112 @@
+import numpy as np
+import tkinter as tk
+from tkinter import ttk
+from PIL import Image, ImageTk
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+from collections import deque
+from ..widgets.casebar import CaseBar
+
+class MainTab:
+    """Main image + profiles + ROI preview."""
+
+    def __init__(self, parent, viewer):
+        self.viewer = viewer
+        self.root = ttk.Frame(parent)
+        self.root.pack(fill=tk.BOTH, expand=True)
+
+        # left column
+        left = ttk.Frame(self.root)
+        left.pack(fill=tk.BOTH, expand=True)
+
+        # image canvas
+        canvas_frame = ttk.Frame(left)
+        canvas_frame.pack(fill=tk.BOTH, expand=True)
+        self.canvas = tk.Canvas(canvas_frame, bg='black')
+        self.canvas.pack(fill=tk.BOTH, expand=True)
+
+        # profiles
+        profiles = ttk.Frame(left)
+        profiles.pack(fill=tk.X, expand=False, pady=10)
+        self._build_profiles(profiles)
+
+        # image state + mouse
+        self._init_image_state()
+        self._bind_mouse()
+
+    # profiles
+    def _build_profiles(self, parent):
+        self.hlevels_buf = deque(maxlen=self.viewer.config.VIEWER_BUFFER_SIZE)
+        self.vlevels_buf = deque(maxlen=self.viewer.config.VIEWER_BUFFER_SIZE)
+
+        # H row
+        h_row = ttk.Frame(parent)
+        h_row.pack(fill=tk.X, expand=False, pady=6)
+        h_left = ttk.Frame(h_row)
+        h_left.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        self.fig_h = plt.Figure(figsize=(6, 1.8), dpi=90)
+        self.ax_h = self.fig_h.add_subplot(111)
+        self.ax_h.set_title('Horizontal profile')
+        self.ax_h.set_ylim(0, 1)
+        self.canvas_h = FigureCanvasTkAgg(self.fig_h, master=h_left)
+        self.canvas_h.get_tk_widget().pack(fill=tk.X, padx=8, pady=4)
+        self.hbar = CaseBar(
+            h_left,
+            count=int(self.viewer.data['IRCamera.profile_len'][0]),
+            height=28,
+            states=self.viewer.data['Servo.pixels_x'][:].astype(int).tolist(),
+            on_change=self._on_hbar_change,
+        )
+        self.hbar.pack(fill=tk.X, padx=8, pady=(0, 8))
+        h_right = ttk.Frame(h_row, width=240)
+        h_right.pack(side=tk.RIGHT, fill=tk.Y, padx=8)
+        self.fig_ellx = plt.Figure(figsize=(3.0, 1.8), dpi=90)
+        self.ax_ellx = self.fig_ellx.add_subplot(111)
+        self.ax_ellx.set_title('ellipse_x')
+        self.canvas_ellx = FigureCanvasTkAgg(self.fig_ellx, master=h_right)
+        self.canvas_ellx.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+
+        # V row
+        v_row = ttk.Frame(parent)
+        v_row.pack(fill=tk.X, expand=False, pady=6)
+        v_left = ttk.Frame(v_row)
+        v_left.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        self.fig_v = plt.Figure(figsize=(6, 1.8), dpi=90)
+        self.ax_v = self.fig_v.add_subplot(111)
+        self.ax_v.set_title('Vertical profile')
+        self.ax_v.set_ylim(0, 1)
+        self.canvas_v = FigureCanvasTkAgg(self.fig_v, master=v_left)
+        self.canvas_v.get_tk_widget().pack(fill=tk.X, padx=8, pady=4)
+        self.vbar = CaseBar(
+            v_left,
+            count=int(self.viewer.data['IRCamera.profile_len'][0]),
+            height=28,
+            states=self.viewer.data['Servo.pixels_y'][:].astype(int).tolist(),
+            on_change=self._on_vbar_change,
+        )
+        self.vbar.pack(fill=tk.X, padx=8, pady=(0, 8))
+        v_right = ttk.Frame(v_row, width=240)
+        v_right.pack(side=tk.RIGHT, fill=tk.Y, padx=8)
+        self.fig_elly = plt.Figure(figsize=(3.0, 1.8), dpi=90)
+        self.ax_elly = self.fig_elly.add_subplot(111)
+        self.ax_elly.set_title('ellipse_y')
+        self.canvas_elly = FigureCanvasTkAgg(self.fig_elly, master=v_right)
+        self.canvas_elly.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+
+    def _on_hbar_change(self, index, state, all_states):
+        try:
+            n = int(self.viewer.data['IRCamera.profile_len'][0])
+            self.viewer.data['Servo.pixels_x'][:n] = [int(s) for s in all_states]
+        except Exception:
+            pass
+
+    def _on_vbar_change(self, index, state, all_states):
+        try:
+            n = int(self.viewer.data['IRCamera.profile_len'][0])
+            self.viewer.data['Servo.pixels_y'][:n] = [int(s) for s in all_states]
+        except Exception:
+            pass
+
+    # image
+    def _init_image_state(self):
+        self.img_w = int(self.viewer.data['IRCamera.frame_dimx'][0])

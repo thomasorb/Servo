@@ -1,0 +1,231 @@
+import time
+from collections import deque
+import tkinter as tk
+from tkinter import ttk
+import numpy as np
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+
+class BuffersTab:
+    """Dynamic time-series tab (choose keys from data)."""
+
+    COLORS = [
+        'tab:blue', 'tab:orange', 'tab:green', 'tab:red', 'tab:purple',
+        'tab:brown', 'tab:pink', 'tab:gray', 'tab:olive', 'tab:cyan'
+    ]
+
+    REDUCERS = ('value', 'mean', 'min', 'max')  # simple reducers
+
+    def __init__(self, parent, viewer):
+        self.viewer = viewer  # access to data/events/config
+        self.root = ttk.Frame(parent)
+        self.root.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
+
+        # buffers
+        self.t0 = time.perf_counter()
+        self.time_buf = deque(maxlen=self.viewer.config.VIEWER_BUFFER_SIZE)
+        self.series_defs = []     # [{'key': str, 'reducer': str, 'color': str}]
+        self.series_bufs = {}     # key -> deque
+        self.lines = {}           # key -> Line2D
+
+        self._build_ui()
+
+    # ui
+    def _build_ui(self):
+        left = ttk.Frame(self.root)
+        left.pack(side=tk.LEFT, fill=tk.Y, padx=(0, 8))
+
+        ttk.Label(left, text='Filter').pack(anchor='w')
+        self.filter_var = tk.StringVar(value='')
+        ent = ttk.Entry(left, textvariable=self.filter_var, width=26)
+        ent.pack(fill=tk.X, pady=(2, 6))
+        ent.bind('<KeyRelease>', lambda e: self._refresh_keylist())
+
+        self.lb = tk.Listbox(left, selectmode=tk.EXTENDED, height=16, exportselection=False)
+        sb = ttk.Scrollbar(left, orient=tk.VERTICAL, command=self.lb.yview)
+        self.lb.configure(yscrollcommand=sb.set)
+        self.lb.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        sb.pack(side=tk.RIGHT, fill=tk.Y)
+
+        # populate keys cache now
+        self._all_keys_cache = []
+        self._refresh_keylist(full=True)
+
+        mid = ttk.Frame(self.root)
+        mid.pack(side=tk.LEFT, fill=tk.Y)
+        ttk.Button(mid, text='Add →', command=self._add_selected).pack(pady=(40, 6))
+        ttk.Button(mid, text='← Remove', command=self._remove_selected).pack()
+
+        right = ttk.Frame(self.root)
+        right.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        # table for selected series
+        cols = ('key', 'reducer', 'color')
+        self.tree = ttk.Treeview(right, columns=cols, show='headings', height=6, selectmode='extended')
+        for c, w in zip(cols, (380, 120, 100)):
+            self.tree.heading(c, text=c)
+            self.tree.column(c, width=w, anchor='w')
+        self.tree.pack(fill=tk.X, padx=4, pady=(0, 6))
+
+        # edit widgets
+        edit = ttk.Frame(right)
+        edit.pack(fill=tk.X, pady=(0, 8))
+        ttk.Label(edit, text='Reducer').pack(side=tk.LEFT)
+        self.reducer_var = tk.StringVar(value=self.REDUCERS[0])
+        cb_red = ttk.Combobox(edit, textvariable=self.reducer_var, values=self.REDUCERS, state='readonly', width=10)
+        cb_red.pack(side=tk.LEFT, padx=(6, 14))
+        ttk.Button(edit, text='Apply to selection', command=self._apply_reducer).pack(side=tk.LEFT)
+
+        # figure
+        fig_wrap = ttk.LabelFrame(right, text='Time series', padding=6)
+        fig_wrap.pack(fill=tk.BOTH, expand=True)
+        self.fig = plt.Figure(figsize=(6, 2.2), dpi=100)
+        self.ax = self.fig.add_subplot(111)
+        self.ax.set_title('Data')
+        self.ax.grid(alpha=0.3)
+        self.ax.set_xlabel('t [s]')
+        self.ax.set_ylabel('value')
+        self.canvas = FigureCanvasTkAgg(self.fig, master=fig_wrap)
+        self.canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+
+    def _refresh_keylist(self, full=False):
+        try:
+            keys = list(self.viewer.data.keys())
+        except Exception:
+            keys = []
+        keys = [str(k) for k in keys]
+        keys.sort()
+        if full or not self._all_keys_cache:
+            self._all_keys_cache = keys
+        flt = (self.filter_var.get() or '').strip().lower()
+        if flt:
+            keys = [k for k in self._all_keys_cache if flt in k.lower()]
+        else:
+            keys = self._all_keys_cache
+        self.lb.delete(0, tk.END)
+        for k in keys:
+            self.lb.insert(tk.END, k)
+
+    def _add_selected(self):
+        sels = self.lb.curselection()
+        if not sels: return
+        for i in sels:
+            key = self.lb.get(i)
+            if any(d['key'] == key for d in self.series_defs):
+                continue
+            color = self.COLORS[len(self.series_defs) % len(self.COLORS)]
+            d = {'key': key, 'reducer': self.REDUCERS[0], 'color': color}
+            self.series_defs.append(d)
+            self.series_bufs[key] = deque(maxlen=self.viewer.config.VIEWER_BUFFER_SIZE)
+            line, = self.ax.plot([], [], color=color, lw=1.5, label=key)
+            self.lines[key] = line
+            self.tree.insert('', tk.END, values=(key, d['reducer'], color))
+        self.ax.legend(loc='upper left')
+        self.canvas.draw_idle()
+
+    def _remove_selected(self):
+        items = self.tree.selection()
+        if not items:
+            focus = self.tree.focus()
+            if focus: items = (focus,)
+        to_rm = []
+        for iid in items:
+            vals = self.tree.item(iid, 'values')
+            if vals:
+                to_rm.append(vals[0])
+            self.tree.delete(iid)
+        for k in to_rm:
+            self.series_defs = [d for d in self.series_defs if d['key'] != k]
+            self.series_bufs.pop(k, None)
+            ln = self.lines.pop(k, None)
+            if ln:
+                try: ln.remove()
+                except Exception: pass
+        self.ax.legend(loc='upper left')
+        self.canvas.draw_idle()
+
+    def _apply_reducer(self):
+        reducer = self.reducer_var.get()
+        items = self.tree.selection()
+        if not items: return
+        for iid in items:
+            vals = list(self.tree.item(iid, 'values'))
+            if not vals: continue
+            key = vals[0]
+            vals[1] = reducer
+            self.tree.item(iid, values=tuple(vals))
+            for d in self.series_defs:
+                if d['key'] == key:
+                    d['reducer'] = reducer
+                    break
+
+    # data helpers
+    def _reduce_value(self, v, how: str):
+        try:
+            arr = np.array(v)
+        except Exception:
+            return np.nan
+        if arr.size == 0:
+            return np.nan
+        if how == 'value':  # first scalar if possible
+            return float(arr.reshape(-1)[0])
+        if how == 'mean':
+            return float(np.nanmean(arr))
+        if how == 'min':
+            return float(np.nanmin(arr))
+        if how == 'max':
+            return float(np.nanmax(arr))
+        return float(arr.reshape(-1)[0])
+
+    def update(self):
+        """Push new samples; call from main refresh."""
+        # time
+        t = time.perf_counter() - self.t0
+        self.time_buf.append(t)
+
+        # series
+        for d in list(self.series_defs):
+            key = d['key']
+            try:
+                val = self.viewer.data[key]
+            except Exception:
+                val = np.nan
+            y = self._reduce_value(val, d['reducer'])
+            self.series_bufs[key].append(y)
+
+        # draw (throttle)
+        now = time.perf_counter()
+        if getattr(self, '_last_draw', 0.0) and (now - self._last_draw) < 0.10:
+            return
+        self._last_draw = now
+
+        tx = np.array(self.time_buf)
+        for key, line in list(self.lines.items()):
+            y = np.array(self.series_bufs.get(key, []), dtype=float)
+            n = min(tx.size, y.size)
+            line.set_data(tx[:n], y[:n])
+        self._autoscale()
+        self.canvas.draw_idle()
+
+    def _autoscale(self):
+        # x auto
+        try:
+            tx = np.array(self.time_buf)
+            if tx.size >= 2:
+                self.ax.set_xlim(float(tx.min()), float(tx.max()))
+        except Exception:
+            pass
+        # y auto with pad
+        ymin, ymax = None, None
+        for key in self.lines:
+            y = np.array(self.series_bufs.get(key, []), dtype=float)
+            if y.size:
+                lo, hi = float(np.nanmin(y)), float(np.nanmax(y))
+                ymin = lo if ymin is None or lo < ymin else ymin
+                ymax = hi if ymax is None or hi > ymax else ymax
+        if ymin is None or ymax is None: return
+        if ymin == ymax:
+            eps = 1e-6 if ymin == 0 else abs(ymin) * 0.05
+            ymin -= eps; ymax += eps
+        pad = (ymax - ymin) * 0.05
+        self.ax.set_ylim(ymin - pad, ymax + pad)

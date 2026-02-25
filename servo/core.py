@@ -39,73 +39,73 @@ class Worker(object):
         self.cleanup()
 
 
-
 class SharedData(object):
-
     def __init__(self):
         self.shms = dict()
         self.arrs = dict()
         self.stored_names = list()
-
         self.state = state_store.StateStore(
             app_name="servo",
             filename="state.json",
             schema_version=1,
-            autosave_interval=10.0,   # save every 10 seconds
+            autosave_interval=10.0,
             only_main_process_writes=True
         )
-        
+
+        # --- Layout change indicator (bumped on any array resize) ---
+        self.add_value('IRCamera.layout_version', int(0), stored=False)
+
+        # --- Timers: 5 slots (ns): copy_viewer, compute_profiles, normalize_levels_opd, write_servo_buffers, total ---
+        # Also a small seqlock-like version for atomic read (even=stable)
+        self.add_array('IRCamera.timers_ns', np.zeros(5, dtype=np.int64), stored=False)
+        self.add_value('IRCamera.timers_version', int(0), stored=False)
+
+        # Existing allocations (unchanged)
         self.add_array('IRCamera.last_frame', np.zeros(config.FULL_FRAME_SIZE, dtype=config.FRAME_DTYPE))
         self.add_value('IRCamera.frame_size', int(config.FULL_FRAME_SIZE))
         self.add_value('IRCamera.frame_dimx', int(config.FULL_FRAME_SHAPE[0]))
         self.add_value('IRCamera.frame_dimy', int(config.FULL_FRAME_SHAPE[1]))
         self.add_value('IRCamera.initialized', False)
 
-        # profiles len set to max to avoid problems when changing profile length
-        self.add_array('IRCamera.hprofile', np.zeros(config.FULL_FRAME_SHAPE[0],
-                                                     dtype=config.FRAME_DTYPE)) 
-        self.add_array('IRCamera.vprofile', np.zeros(config.FULL_FRAME_SHAPE[1],
-                                                     dtype=config.FRAME_DTYPE))
-        self.add_array('IRCamera.hprofile_normalized', np.zeros(config.FULL_FRAME_SHAPE[0],
-                                                                dtype=config.FRAME_DTYPE)) 
-        self.add_array('IRCamera.vprofile_normalized', np.zeros(config.FULL_FRAME_SHAPE[0],
-                                                                dtype=config.FRAME_DTYPE)) 
-        
-        
+        # Profiles (kept at max size to avoid frequent resizes)
+        self.add_array('IRCamera.hprofile', np.zeros(config.FULL_FRAME_SHAPE[0], dtype=config.FRAME_DTYPE))
+        self.add_array('IRCamera.vprofile', np.zeros(config.FULL_FRAME_SHAPE[1], dtype=config.FRAME_DTYPE))
+        self.add_array('IRCamera.hprofile_normalized', np.zeros(config.FULL_FRAME_SHAPE[0], dtype=config.FRAME_DTYPE))
+        self.add_array('IRCamera.vprofile_normalized', np.zeros(config.FULL_FRAME_SHAPE[0], dtype=config.FRAME_DTYPE))
+
         self.add_array('IRCamera.hprofile_levels', np.zeros(3, dtype=config.FRAME_DTYPE))
         self.add_array('IRCamera.vprofile_levels', np.zeros(3, dtype=config.FRAME_DTYPE))
         self.add_array('IRCamera.hprofile_levels_pos', np.zeros(3, dtype=config.FRAME_DTYPE))
         self.add_array('IRCamera.vprofile_levels_pos', np.zeros(3, dtype=config.FRAME_DTYPE))
-        
-        
+
         self.add_value('IRCamera.profile_x', int(config.DEFAULT_PROFILE_POSITION[0]), stored=True)
         self.add_value('IRCamera.profile_y', int(config.DEFAULT_PROFILE_POSITION[1]), stored=True)
         self.add_value('IRCamera.profile_len', int(config.DEFAULT_PROFILE_LEN), stored=True)
         self.add_value('IRCamera.profile_width', int(config.DEFAULT_PROFILE_WIDTH), stored=True)
+
         self.add_array('IRCamera.roi', np.zeros(config.FULL_FRAME_SIZE, dtype=config.FRAME_DTYPE))
 
         self.add_array('IRCamera.angles', np.zeros(4, dtype=config.FRAME_DTYPE), stored=True)
         self.add_array('IRCamera.last_angles', np.zeros(4, dtype=config.FRAME_DTYPE), stored=True)
         self.add_array('IRCamera.opds', np.zeros(4, dtype=config.FRAME_DTYPE), stored=True)
         self.add_value('IRCamera.mean_opd', float(0.))
+        self.add_value('IRCamera.std_opd', float(np.nan))
         self.add_value('IRCamera.mean_opd_offset', float(0.), stored=True)
         self.add_value('IRCamera.tip', float(0.), stored=True)
         self.add_value('IRCamera.tilt', float(0.), stored=True)
-                
-        self.add_array('IRCamera.mean_opd_buffer', np.full(
-            config.SERVO_BUFFER_SIZE, np.nan, dtype=config.FRAME_DTYPE))
 
-        self.add_array('IRCamera.tip_buffer', np.full(
-            config.SERVO_BUFFER_SIZE, np.nan, dtype=config.FRAME_DTYPE))
+        self.add_array('IRCamera.mean_opd_buffer', np.full(config.SERVO_BUFFER_SIZE, np.nan, dtype=config.FRAME_DTYPE))
+        self.add_array('IRCamera.tip_buffer', np.full(config.SERVO_BUFFER_SIZE, np.nan, dtype=config.FRAME_DTYPE))
+        self.add_array('IRCamera.tilt_buffer', np.full(config.SERVO_BUFFER_SIZE, np.nan, dtype=config.FRAME_DTYPE))
 
-        self.add_array('IRCamera.tilt_buffer', np.full(
-            config.SERVO_BUFFER_SIZE, np.nan, dtype=config.FRAME_DTYPE))
-        
-        self.add_value('IRCamera.median_sampling_time', float(np.nan))
+        self.add_value('IRCamera.mean_sampling_time', float(np.nan))
+        self.add_value('IRCamera.fps', float(np.nan))
+        self.add_value('IRCamera.loop_time', float(np.nan))
+        self.add_value('IRCamera.loop_fps', float(np.nan))
         self.add_value('IRCamera.lost_frames', int(0))
         self.add_value('IRCamera.state', float(0), stored=False)
+        self.add_value('IRCamera.full_output', float(0), stored=False)
 
-        
         # selected pixels: 0:none, 1:side, 2:center
         self.add_value('Servo.state', float(0), stored=False)
         
@@ -144,6 +144,8 @@ class SharedData(object):
 
         self.add_array('Servo.PID_DA', np.array(config.DEFAULT_PID_DA).astype(config.DATA_DTYPE),
                        stored=True)
+
+        self.add_value('Servo.is_lost', True, stored=False)
         
         self.add_array('DAQ.piezos_level',
                        np.zeros(3, dtype=config.DAQ_PIEZO_LEVELS_DTYPE),
@@ -157,6 +159,9 @@ class SharedData(object):
         self.add_value('SerialComm.state', float(0), stored=False)
         self.add_value('Viewer.state', float(0), stored=False)
 
+        self.add_array('SerialComm.last_status_frame', np.zeros(config.SERIAL_STATUS_FRAME_SIZE, dtype=np.uint8), stored=False)
+        
+
     def add_array(self, name, array, stored=False):
         if stored:
             self.stored_names.append(name)
@@ -168,22 +173,17 @@ class SharedData(object):
                     log.warning(f'{name} could not be loaded from saved states')
                 else:
                     array = init
-            
         try:
             self.shms[name] = shared_memory.SharedMemory(create=True, name=name, size=array.nbytes)
         except FileExistsError:
             self.shms[name] = shared_memory.SharedMemory(name=name)
-            
+
         self.arrs[name] = np.ndarray(array.shape, dtype=array.dtype, buffer=self.shms[name].buf)
-        
-        # Remplissage vectorisé (rapide, côté C) :
-        self.arrs[name][:] = array
-        #self.shms[name].close()  # ne détruit pas
+        self.arrs[name][:] = array  # fast vectorized fill
         log.info(f'added shared array {name} {array.shape}')
 
     def add_value(self, name, val, stored=False):
         self.add_array(name, np.array([val,]), stored=stored)
-
 
     def __getitem__(self, name):
         return self.arrs[name]
@@ -191,24 +191,56 @@ class SharedData(object):
     def __setitem__(self, name, value):
         self.arrs[name] = value
 
+    def resize_array(self, name, new_array):
+        """
+        Recreate the shared memory segment for 'name' with the shape/dtype of 'new_array'.
+        NOTE: other processes must re-open (re-map) 'name' after this call.
+        We bump 'IRCamera.layout_version' so readers can detect & remap.
+        """
+        # Close & unlink existing segment
+        shm = self.shms.get(name, None)
+        if shm is not None:
+            try:
+                shm.close()
+                shm.unlink()
+                log.info(f'recreated shared memory for {name}')
+            except FileNotFoundError:
+                log.warning(f'shared memory {name} could not be unlinked for resize')
+
+        # Create a fresh segment with same name
+        self.shms[name] = shared_memory.SharedMemory(create=True, name=name, size=new_array.nbytes)
+        self.arrs[name] = np.ndarray(new_array.shape, dtype=new_array.dtype, buffer=self.shms[name].buf)
+        self.arrs[name][:] = new_array
+
+        # Bump layout version once
+        self.arrs['IRCamera.layout_version'][0] += 1
+
+    def ensure_size_and_dtype(self, name, shape, dtype):
+        """
+        Ensure that shared array 'name' matches 'shape' and 'dtype'.
+        If not, it is recreated with zeros (and layout_version is bumped).
+        """
+        arr = self.arrs[name]
+        if arr.shape != tuple(shape) or arr.dtype != dtype:
+            zeroed = np.zeros(shape, dtype=dtype)
+            self.resize_array(name, zeroed)
+
     def keys(self):
         return self.arrs.keys()
-    
+
     def stop(self):
-        
-        # save states
+        # Save states (unchanged)
         log.info('saving states')
         for iname in self.stored_names:
             idata = list(self[iname][:])
             self.state.set(iname, idata)
             if len(idata) < 10:
-                log.info(f'   {iname} : {idata}')
+                log.info(f' {iname} : {idata}')
             else:
-                log.info(f'   {iname} : {idata[:5]}...{idata[-5:]}')
-                    
+                log.info(f' {iname} : {idata[:5]}...{idata[-5:]}')
         self.state.save()
 
-        # free shared memory
+        # Free shared memory
         for ikey in self.shms:
             self.shms[ikey].close()
             try:
@@ -216,7 +248,5 @@ class SharedData(object):
                 log.info(f'removed shared memory {ikey}')
             except FileNotFoundError:
                 log.warning(f'shared memory {ikey} could not be unlinked')
-
-
 
 

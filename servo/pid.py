@@ -11,8 +11,9 @@ class PIDConfig:
     out_max: float            # Command upper bound
     deriv_filter_hz: float = 50.0  # Low-pass cutoff for D term (Hz)
     kaw: float = 0.0               # Anti-windup back-calculation gain (0=off)
-    deadband: float = 0.0          # Optional error deadband (units)
-
+    deadband: float = 0.0          # Optional error deadband (units)        
+        
+    
 class PID:
     def __init__(self, cfg: PIDConfig):
         self.cfg = cfg
@@ -32,6 +33,18 @@ class PID:
         self._i = integral
         self._prev_meas = None
         self._d_meas_f = 0.0
+
+    def update_config(self, **kwargs):
+        for key, value in kwargs.items():
+            if hasattr(self.cfg, key):
+                setattr(self.cfg, key, value)
+        # Recompute filter coefficient if deriv_filter_hz changed
+        if 'deriv_filter_hz' in kwargs:
+            if self.cfg.deriv_filter_hz > 0.0:
+                rc = 1.0 / (2.0 * math.pi * self.cfg.deriv_filter_hz)
+                self._alpha = self.cfg.dt / (rc + self.cfg.dt)
+            else:
+                self._alpha = 1.0
 
     def update(self, control: float, setpoint: float, measurement: float) -> float:
         """Compute the new control output."""
@@ -81,3 +94,35 @@ class PID:
             self._i = i_candidate
 
         return u
+
+class PiezoPID(PID):
+
+    def __init__(self, data, coeff_key, dt, out_min, out_max,
+                 deriv_filter_hz=50.0, kaw=0.0, deadband=0.0):
+
+        self.data = data
+        self.coeff_key = coeff_key
+        
+        cfg = PIDConfig(
+            dt=dt, out_min=out_min, out_max=out_max,
+            deriv_filter_hz=deriv_filter_hz, kaw=kaw, deadband=deadband,
+            kp=0.0, ki=0.0, kd=0.0)
+        
+        super().__init__(cfg)
+        
+        self.update_coeffs()
+
+    def update_coeffs(self):
+        kp, ki, kd = self.data[self.coeff_key][:3]
+        self.cfg.kp = float(kp)
+        self.cfg.ki = float(ki)
+        self.cfg.kd = float(kd)
+
+    def update_config(self, **kwargs):
+        """Update PID configuration parameters and recompute coefficients if needed.
+
+        Note that the PID gains (kp, ki, kd) are read obtained via
+        shared data and cannot be directly set via kwargs.
+        """
+        super().update_config(**kwargs)
+        self.update_coeffs()

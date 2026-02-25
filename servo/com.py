@@ -53,8 +53,10 @@ import threading
 import logging
 import struct
 import serial  # pyserial
+import numpy as np
 
 from . import core
+from . import config
 
 log = logging.getLogger(__name__)
 
@@ -113,13 +115,17 @@ class SerialComm(core.Worker):
         self.period = 1.0 / float(status_rate_hz)
 
         # Open non-blocking serial port for low latency
-        self.ser = serial.Serial(
-            port=self.port,
-            baudrate=self.baudrate,
-            timeout=0.0,          # non-blocking reads
-            write_timeout=0.0,    # non-blocking writes
-            inter_byte_timeout=None
-        )
+        try:
+            self.ser = serial.Serial(
+                port=self.port,
+                baudrate=self.baudrate,
+                timeout=0.0,          # non-blocking reads
+                write_timeout=0.0,    # non-blocking writes
+                inter_byte_timeout=None
+            )
+        except Exception as e:
+            log.error(f"Failed to open serial port {self.port}: {e}. If the permission was undenied don't forget to add dialout group to your user and re-login with'sudo usermod -aG dialout $USER.")
+            raise
 
         # RX state
         self._rx_buf = bytearray()
@@ -132,7 +138,7 @@ class SerialComm(core.Worker):
         # Pre-allocated STATUS frame: [STX_TX][TYPE][LEN][payload(5)][CHK]
         # payload: <float32 opd><uint8 state>  -> LEN=5
         self._status_hdr = bytes([STX_TX, TX_STATUS, 5])
-        self._tx_frame = bytearray(3 + 5 + 1)  # header + payload + chk
+        self._tx_frame = bytearray(config.SERIAL_STATUS_FRAME_SIZE)  # header + payload + chk
         self._tx_frame[0:3] = self._status_hdr
 
         log.info(f"SerialComm on {self.port} @ {self.baudrate} baud, "
@@ -278,11 +284,13 @@ class SerialComm(core.Worker):
         self._tx_frame[8] = c
 
         # Non-blocking write
+        self.data["SerialComm.last_status_frame"][:len(self._tx_frame)] = np.array(self._tx_frame, dtype=np.uint8)
         try:
             self.ser.write(self._tx_frame)
-        except Exception:
+        except Exception as e:
             # Avoid logging at high frequency to keep timing stable
-            pass
+            log.warning(f'error writing STATUS frame: {e}')
+            
 
     def _send_ack(self, cmd_type: int):
         """
