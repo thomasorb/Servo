@@ -98,7 +98,10 @@ class SharedData(object):
         self.add_array('IRCamera.tip_buffer', np.full(config.SERVO_BUFFER_SIZE, np.nan, dtype=config.FRAME_DTYPE))
         self.add_array('IRCamera.tilt_buffer', np.full(config.SERVO_BUFFER_SIZE, np.nan, dtype=config.FRAME_DTYPE))
 
-        self.add_value('IRCamera.median_sampling_time', float(np.nan))
+        self.add_value('IRCamera.mean_sampling_time', float(np.nan))
+        self.add_value('IRCamera.fps', float(np.nan))
+        self.add_value('IRCamera.loop_time', float(np.nan))
+        self.add_value('IRCamera.loop_fps', float(np.nan))
         self.add_value('IRCamera.lost_frames', int(0))
         self.add_value('IRCamera.state', float(0), stored=False)
         self.add_value('IRCamera.full_output', float(0), stored=False)
@@ -188,7 +191,6 @@ class SharedData(object):
     def __setitem__(self, name, value):
         self.arrs[name] = value
 
-    # ------- New: resize API (recreate SHM segment with same name) -------
     def resize_array(self, name, new_array):
         """
         Recreate the shared memory segment for 'name' with the shape/dtype of 'new_array'.

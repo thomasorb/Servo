@@ -438,9 +438,15 @@ class Viewer(core.Worker):
         except Exception:
             std_opd = float('nan')
         try:
-            fps = 1.0/float(self.data['IRCamera.median_sampling_time'][0])
+            fps = float(self.data['IRCamera.fps'][0])
         except Exception:
             fps = float('nan')
+
+        try:
+            loop_fps = float(self.data['IRCamera.loop_fps'][0])
+        except Exception:
+            loop_fps = float('nan')
+            
         try:
             drops = int(self.data['IRCamera.lost_frames'][0])
         except Exception:
@@ -454,7 +460,7 @@ class Viewer(core.Worker):
             
         s = (f"mean OPD: {utils.fwformat(mean_opd, 9)} nm | (std): {utils.fwformat(std_opd, 5, decimals=1)} nm",
              f"OPD target: {utils.fwformat(opd_target, 9)} nm",
-             f"fps: {utils.fwformat(fps/1e3, 6, decimals=1)} kHz | frame drops: {drops}/{config.IRCAM_BUFFER_SIZE}")
+             f"fps: {utils.fwformat(fps/1e3, 4, decimals=1)} kHz | loop fps: {utils.fwformat(loop_fps/1e3, 4, decimals=1)} kHz | drops: {drops}/{config.IRCAM_BUFFER_SIZE}")
         self.status_var.set('\n'.join(s))
 
         # sync toolbar according to current state

@@ -11,6 +11,8 @@ from . import core
 from . import config
 from . import utils
 
+from .faster import fast_copy_transpose, compute_profiles_local_f32, batch_normalize_and_levels
+
 log = logging.getLogger(__name__)
 
 class IRCamera(core.Worker):
@@ -197,6 +199,17 @@ class DataObserver(NITLibrary.NITUserObserver):
         self.arr_hellipse   = self.data['Servo.hellipse_norm_coeffs']
         self.arr_vellipse   = self.data['Servo.vellipse_norm_coeffs']
 
+        # values
+        self.arr_mean_sampling_time = self.data['IRCamera.mean_sampling_time']
+        self.arr_fps = self.data['IRCamera.fps']
+        self.arr_lost_frames = self.data['IRCamera.lost_frames']
+        self.arr_loop_time = self.data['IRCamera.loop_time']
+        self.arr_loop_fps = self.data['IRCamera.loop_fps']
+        self.arr_frame_dimx = self.data['IRCamera.frame_dimx']
+        self.arr_frame_dimy = self.data['IRCamera.frame_dimy']
+        self.arr_frame_size = self.data['IRCamera.frame_size']
+        self.arr_mean_opd_offset = self.data['IRCamera.mean_opd_offset']
+
         # Preallocated workspaces to avoid per-frame allocations
         self.hlevels_ws = np.empty(3, dtype=config.DATA_DTYPE)
         self.vlevels_ws = np.empty(3, dtype=config.DATA_DTYPE)
@@ -218,14 +231,22 @@ class DataObserver(NITLibrary.NITUserObserver):
         self.opd_deque = collections.deque(maxlen=config.SERVO_BUFFER_SIZE)
         self.tip_deque = collections.deque(maxlen=config.SERVO_BUFFER_SIZE)
         self.tilt_deque = collections.deque(maxlen=config.SERVO_BUFFER_SIZE)
+        self.last_id = -1
 
         gc.freeze()
         gc.disable()
 
     def onNewFrame(self, frame):
         try:
-            index = int(frame.id()) - 1
-            frame_time = time.time()
+            frame_time = time.perf_counter()
+            frame_id = int(frame.id())
+            if frame_id == self.last_id:
+                return
+            else:
+                self.last_id = frame_id
+                
+            index = frame_id - 1
+            
             self.times[index % self.times.size] = frame_time
             self.ids[index % self.times.size] = index
 
@@ -236,8 +257,9 @@ class DataObserver(NITLibrary.NITUserObserver):
                 mean_sampling_time = float(
                     (np.nanmax(self.times) - np.nanmin(self.times)) / np.sum(
                         ~np.isnan(self.times)))
-                self.data['IRCamera.median_sampling_time'][0] = mean_sampling_time
-                self.data['IRCamera.lost_frames'][0] = int(np.sum(diff_ids > 1))
+                self.arr_mean_sampling_time[0] = mean_sampling_time
+                self.arr_fps[0] = 1/mean_sampling_time
+                self.arr_lost_frames[0] = int(np.sum(diff_ids > 1))
                 self.times.fill(np.nan)
                 self.ids.fill(np.nan)
 
@@ -252,13 +274,15 @@ class DataObserver(NITLibrary.NITUserObserver):
                 # If needed, recreate last_frame and roi to the new full-frame size
                 if expected_size != self.data['IRCamera.frame_size'][0]:
                     # Update metadata
-                    self.data['IRCamera.frame_dimx'][0] = int(frame_data.shape[0])
-                    self.data['IRCamera.frame_dimy'][0] = int(frame_data.shape[1])
-                    self.data['IRCamera.frame_size'][0] = int(expected_size)
+                    self.arr_frame_dimx[0] = int(frame_data.shape[0])
+                    self.arr_frame_dimy[0] = int(frame_data.shape[1])
+                    self.arr_frame_size[0] = int(expected_size)
 
                     # Recreate SHM segments for last_frame and roi (same names)
-                    self.data.ensure_size_and_dtype('IRCamera.last_frame', (expected_size,), self.arr_last_frame.dtype)
-                    self.data.ensure_size_and_dtype('IRCamera.roi', (expected_size,), self.arr_roi.dtype)
+                    self.data.ensure_size_and_dtype(
+                        'IRCamera.last_frame', (expected_size,), self.arr_last_frame.dtype)
+                    self.data.ensure_size_and_dtype(
+                        'IRCamera.roi', (expected_size,), self.arr_roi.dtype)
 
                     # Refresh local views to the (possibly) remapped segments
                     self.arr_last_frame = self.data['IRCamera.last_frame']
@@ -267,7 +291,9 @@ class DataObserver(NITLibrary.NITUserObserver):
                 # Copy transposed view directly (no flatten temp)
                 # Keep the transpose to preserve viewer orientation as before.
                 # Fast path: write column-by-column to 1D (Numba kernel)
-                utils.copy_transpose_to_1d(frame_data, self.arr_last_frame[:expected_size])
+                #utils.copy_transpose_to_1d(frame_data, self.arr_last_frame[:expected_size])
+                fast_copy_transpose(frame_data.astype(np.float32, copy=False),
+                    self.arr_last_frame[:expected_size])
 
                 # Determine profile geometry
                 if self.roi_mode:
@@ -295,8 +321,11 @@ class DataObserver(NITLibrary.NITUserObserver):
 
             # When the code previously used `a.T`, (ix, iy) in that transposed space
             # correspond to (iy, ix) in the native space.
-            vprofile, hprofile, roi = utils.compute_profiles(
-                frame_data, self.iy, self.ix, self.iwid, self.profile_len, get_roi=True)
+            #vprofile, hprofile, roi = utils.compute_profiles(
+            #    frame_data, self.iy, self.ix, self.iwid, self.profile_len, get_roi=True)
+            vprofile, hprofile, roi = compute_profiles_local_f32(
+                frame_data.astype(np.float32, copy=False),
+                int(self.iy), int(self.ix), int(self.iwid), int(self.profile_len), True)
 
             
             # # --------- T2: normalization + levels + angles/opd ----------
@@ -330,24 +359,22 @@ class DataObserver(NITLibrary.NITUserObserver):
 
                 
             # Levels (3 positions per axis)
-            # for i in range(3):
-            #     self.hlevels_ws[i] = utils.normalize_and_compute_profile_level(
-            #         hprofile, self.hmin, self.hmax, self.xpixels_list[i])
-            #     self.vlevels_ws[i] = utils.normalize_and_compute_profile_level(
-            #         vprofile, self.vmin, self.vmax, self.ypixels_list[i])
-
-            self.hlevels_ws[:] = utils.batch_normalize_and_levels(
-                hprofile, self.hmin, self.hmax, self.xpixels_list
+            self.hlevels_ws[:] = batch_normalize_and_levels(
+                hprofile, self.hmin, self.hmax,
+                self.xpixels_list[0], self.xpixels_list[1], self.xpixels_list[2]
             )
-            self.vlevels_ws[:] = utils.batch_normalize_and_levels(
-                vprofile, self.vmin, self.vmax, self.ypixels_list
+            self.vlevels_ws[:] = batch_normalize_and_levels(
+                vprofile, self.vmin, self.vmax,
+                self.ypixels_list[0], self.ypixels_list[1], self.ypixels_list[2]
             )
             
             # Angles & OPD
-            self.angles_ws[:2] = utils.compute_angles(self.hlevels_ws, self.arr_hellipse[:4], self.arr_last_angles[:2])
-            self.angles_ws[2:] = utils.compute_angles(self.vlevels_ws, self.arr_vellipse[:4], self.arr_last_angles[2:])
+            self.angles_ws[:2] = utils.compute_angles(self.hlevels_ws, self.arr_hellipse[:4],
+                                                      self.arr_last_angles[:2])
+            self.angles_ws[2:] = utils.compute_angles(self.vlevels_ws, self.arr_vellipse[:4],
+                                                      self.arr_last_angles[2:])
             opds = utils.compute_opds(self.angles_ws)
-            opds -= self.data['IRCamera.mean_opd_offset']
+            opds -= self.arr_mean_opd_offset[0]
             mean_opd = utils.mean(opds)
 
             # check for lost
@@ -395,8 +422,11 @@ class DataObserver(NITLibrary.NITUserObserver):
                         self.tilt_deque, dtype=config.FRAME_DTYPE)
                 
             self.arr_last_angles[:4] = self.angles_ws
-
-
+            loop_time = time.perf_counter() - frame_time
+            self.arr_loop_time[0] = loop_time
+            self.arr_loop_fps[0] = 1./loop_time
+            
+            
         except Exception as e:
             log.error(f'error on new frame: {e}')
 
