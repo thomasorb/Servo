@@ -121,7 +121,7 @@ class PiezoPID(PID):
     def update_config(self, **kwargs):
         """Update PID configuration parameters and recompute coefficients if needed.
 
-        Note that the PID gains (kp, ki, kd) are read obtained via
+        Note that the PID gains (kp, ki, kd) are obtained via
         shared data and cannot be directly set via kwargs.
         """
         super().update_config(**kwargs)

@@ -137,6 +137,8 @@ class SharedData(object):
         self.add_value('Servo.opd_target', float(np.nan), stored=True)
         self.add_value('Servo.tip_target', float(0.), stored=True)
         self.add_value('Servo.tilt_target', float(0.), stored=True)
+        self.add_value('Servo.velocity_target', float(config.NEXLINE_MOVING_VELOCITY), stored=True)
+        
 
         
         self.add_array('Servo.PID_OPD', np.array(config.DEFAULT_PID_OPD).astype(config.DATA_DTYPE),
@@ -144,6 +146,10 @@ class SharedData(object):
 
         self.add_array('Servo.PID_DA', np.array(config.DEFAULT_PID_DA).astype(config.DATA_DTYPE),
                        stored=True)
+
+        self.add_array('Servo.PID_NEXLINE', np.array(config.DEFAULT_PID_NEXLINE).astype(config.DATA_DTYPE),
+                       stored=True)
+
 
         self.add_value('Servo.is_lost', True, stored=False)
         
@@ -155,7 +161,12 @@ class SharedData(object):
                        np.zeros(3, dtype=config.DAQ_PIEZO_LEVELS_DTYPE),
                        stored=True)
         self.add_value('DAQ.state', float(0), stored=False)
+
         self.add_value('Nexline.state', float(0), stored=False)
+        self.add_value('Nexline.moving_velocity', float(config.NEXLINE_MOVING_VELOCITY), stored=False)
+        
+
+        
         self.add_value('SerialComm.state', float(0), stored=False)
         self.add_value('Viewer.state', float(0), stored=False)
 

@@ -43,6 +43,7 @@ VIEWER_BUFFER_SIZE = 1000 # for viewer servo values buffering
 SERVO_DEFAULT_NICENESS = 0
 SERVO_MAX_NICENESS = -20
 SERVO_LOW_NICENESS = 10
+SERVO_OPD_TIMEOUT = 5.0 # s
 
 
 VIEWER_ELLIPSE_DRAW_BUFFER_SIZE = 100
@@ -53,6 +54,7 @@ DEFAULT_PROFILE_POSITION = np.array((DEFAULT_PROFILE_LEN//2, DEFAULT_PROFILE_LEN
 
 DEFAULT_PID_OPD = [1e-4, 5e-4, 1.0]
 DEFAULT_PID_DA = [-1e-1, 1e-4, 1.0]
+DEFAULT_PID_NEXLINE = [0.1, 0., 0.]
 
 SERIAL_PORT = "/dev/serial/by-id/usb-Prolific_Technology_Inc._USB-Serial_Controller-if00-port0"
 SERIAL_BAUDRATE = 9600 # bps
@@ -69,6 +71,7 @@ SERVO_EVENTS = (
     'roi_mode',
     'full_frame_mode',
     'reset_zpd',
+    'walk_to_opd',
 )
 
 NEXLINE_EVENTS = (
@@ -81,5 +84,8 @@ NEXLINE_EVENTS = (
 NORMALIZATION_LEN_RATIO = 0.7
 
 NEXLINE_CHANNEL = 1
+NEXLINE_MOVING_VELOCITY = 25 # um/s (optical)
 NEXLINE_STEP_SIZE = 5 # um in mechanical path difference
 NEXLINE_TIMEOUT = 300 # s
+NEXLINE_MIN_VELOCITY = 0.001
+NEXLINE_MAX_VELOCITY = 50

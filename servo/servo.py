@@ -1,3 +1,4 @@
+import collections
 import multiprocessing
 import time
 import traceback
@@ -91,22 +92,25 @@ class Servo(StateMachine):
                 ServoState.RUNNING, action=self._start),
             (ServoState.RUNNING, ServoEvent.NORMALIZE): Transition(
                 ServoState.RUNNING, action=self._normalize),
-            (ServoState.STAY_AT_OPD, ServoEvent.NORMALIZE): Transition(
-                ServoState.STAY_AT_OPD, action=self._normalize),
+            (ServoState.TRACKING, ServoEvent.NORMALIZE): Transition(
+                ServoState.TRACKING, action=self._normalize),
             (ServoState.RUNNING, ServoEvent.STOP): Transition(
                 ServoState.STOPPED, action=self._stop),
-            (ServoState.STAY_AT_OPD, ServoEvent.MOVE_TO_OPD): Transition(
-                ServoState.STAY_AT_OPD, action=self._move_to_opd),
+            (ServoState.TRACKING, ServoEvent.MOVE_TO_OPD): Transition(
+                ServoState.TRACKING, action=self._move_to_opd),
             (ServoState.RUNNING, ServoEvent.CLOSE_LOOP): Transition(
-                ServoState.STAY_AT_OPD, action=self._close_loop),         
-            (ServoState.STAY_AT_OPD, ServoEvent.OPEN_LOOP): Transition(
+                ServoState.TRACKING, action=self._close_loop),         
+            (ServoState.TRACKING, ServoEvent.OPEN_LOOP): Transition(
                 ServoState.RUNNING, action=self._open_loop),          
             (ServoState.RUNNING, ServoEvent.ROI_MODE): Transition(
                 ServoState.RUNNING, action=self._roi_mode),
             (ServoState.RUNNING, ServoEvent.FULL_FRAME_MODE): Transition(
                 ServoState.RUNNING, action=self._full_frame_mode),
-            (ServoState.STAY_AT_OPD, ServoEvent.RESET_ZPD): Transition(
-                ServoState.STAY_AT_OPD, action=self._reset_zpd),
+            (ServoState.TRACKING, ServoEvent.RESET_ZPD): Transition(
+                ServoState.TRACKING, action=self._reset_zpd),
+            (ServoState.TRACKING, ServoEvent.WALK_TO_OPD): Transition(
+                ServoState.TRACKING, action=self._walk_to_opd),
+            
             
         }
         super().__init__(ServoState.IDLE, table)
@@ -187,8 +191,8 @@ class Servo(StateMachine):
         
         return pid_control
 
-    def on_enter_stay_at_opd(self, _):
-        log.info(">> STAY_AT_OPD")
+    def on_enter_tracking(self, _):
+        log.info(">> TRACKING")
 
         self.data['Servo.is_lost'][0] = float(False)
         
@@ -268,25 +272,22 @@ class Servo(StateMachine):
                     break
 
                 self.poll()
-
                 if self.events['Servo.stop'].is_set():
-                    break
-
+                    return
                 if self.events['Servo.open_loop'].is_set():
-                    break
-
+                    return
                 if self.data['Servo.is_lost'][0] == float(True):
-                    break
+                    return
 
                 time.sleep(config.OPD_LOOP_TIME)
                 
             except KeyboardInterrupt:
                 log.error('Keyboard interrupt')
                 self.events['Servo.stop'].set()
-                break
+                return
 
-    def on_exit_stay_at_opd(self, _):
-        log.info("<< STAY_AT_OPD")
+    def on_exit_tracking(self, _):
+        log.info("<< TRACKING")
 
 
     def start_worker(self, WorkerClass, priority, **kwargs):
@@ -304,15 +305,7 @@ class Servo(StateMachine):
         )
         self.workers.append((worker, stop_event_name))
         worker.start()
-
-        # # >>> Only for IRCam: elevate child to RT on CPU 2 <<<
-        # if WorkerClass is ircam.IRCamera:
-        #     if worker.pid is not None:
-        #         _elevate_ircam_rt(worker.pid, cpu=2, prio=80)
-        #     else:
-        #         log.error("IRCam worker PID unavailable; cannot elevate to RT")
         
-    # Actions
     def _start(self, _):
 
         log.info("Starting Servo")
@@ -465,13 +458,197 @@ class Servo(StateMachine):
         self.data['IRCamera.last_angles'][:4] = np.zeros(4, dtype=config.FRAME_DTYPE)
         self.data['IRCamera.mean_opd_offset'][0] = float(0)#-self.data['IRCamera.mean_opd'][0]
         
+
+    def _center_piezos(self):
+        # centering OPD piezo at mid range
+        log.info('centering OPD piezo')
+                
+        self.data['DAQ.piezos_level'][0] = 5
+
+        startt = time.perf_counter()
+        while True:
+            if np.abs(self.data['DAQ.piezos_level_actual'][0] - 5) < 0.1:
+                break
+            if time.perf_counter() - startt > config.SERVO_OPD_TIMEOUT:
+                log.error("Timeout while centering OPD piezo")
+                return False
+        return True
+
+    def _move_with_nexline(self):
+        self.events['Nexline.move'].set()
         
+        time.sleep(0.1) # wait for event dispatch
+        while True: # wait for nexline move to finish
+            if NexlineState(self.data['Nexline.state']).name != 'MOVING':
+                break
+            time.sleep(0.1)
+            
+    def _walk_to_opd(self, _):
+        log.info("Walking to OPD")
+
+        final_opd_target = float(self.data['Servo.opd_target'][0]) # nm
+        velocity_target = float(self.data['Servo.velocity_target'][0]) # um/s
+        tip_target = float(self.data['Servo.tip_target'][0])
+        tilt_target = float(self.data['Servo.tilt_target'][0])
+        
+        log.info(f"   Final OPD target: {final_opd_target} nm")
+        log.info(f"   Velocity target: {velocity_target} um/s")
+        log.info(f"   TIP target: {tip_target} radians")
+        log.info(f"   TILT target: {tilt_target} radians")
+
+        da1_level_orig = float(self.data['DAQ.piezos_level'][1])
+        da2_level_orig = float(self.data['DAQ.piezos_level'][2])
+
+        last_update_time = time.time()
+        da1_buffer = list()
+        da2_buffer = list()
+        opd_correction_buffer = collections.deque(maxlen=100)
+        pid_opd_control = self.get_pid_control('OPD')
+        pid_da1_control = self.get_pid_control(
+            'DA',
+            out_min=da1_level_orig - config.PIEZO_DA_LOOP_MAX_V_DIFF,
+            out_max=da1_level_orig + config.PIEZO_DA_LOOP_MAX_V_DIFF)
+        pid_da2_control = self.get_pid_control(
+            'DA',
+            out_min=da2_level_orig - config.PIEZO_DA_LOOP_MAX_V_DIFF,
+            out_max=da2_level_orig + config.PIEZO_DA_LOOP_MAX_V_DIFF)
+        
+        pid_nexline_control = self.get_pid_control(
+            'NEXLINE',
+            out_min=config.NEXLINE_MIN_VELOCITY,
+            out_max=config.NEXLINE_MAX_VELOCITY)
+
+        # set nexline velocity at target velocity
+        self.data['Nexline.moving_velocity'][0] = self.data['Servo.velocity_target'][0]
+
+        # if not self._center_piezos():
+        #    log.error("Failed to center piezos, cannot walk to OPD")
+        #    return
+        
+        # check if piezos are in a correct range
+        if not (4 < self.data['DAQ.piezos_level'][0] < 6):
+            log.error('piezo off range, start with OPD piezo near the central position')
+            return
+
+        # compute initial OPD scale
+        opd_start = self.data['IRCamera.mean_opd'][0]
+        opd_diff = final_opd_target - opd_start
+        step_size = config.NEXLINE_STEP_SIZE * 1000 # nm
+        
+        opd_targets = np.arange(opd_start, final_opd_target, np.sign(opd_diff) * step_size)
+
+        if opd_targets.size == 0 or opd_targets[-1] != final_opd_target:
+            opd_targets = np.append(opd_targets, final_opd_target)
+
+        direction = np.sign(final_opd_target - opd_start)
+
+        log.info(f"Walking through {len(opd_targets)} OPD targets with step size {step_size} nm")
+
+        move_startt = time.perf_counter()
+        
+        for opd_target in opd_targets:
+            # set next opd target and velocity
+            self.data['Servo.opd_target'][0] = opd_target
+
+            # move
+            self.events['Nexline.move'].set()
+            step_startt = time.perf_counter()
+            
+            while True: # wait for nexline move to finish
+                try:
+                    if time.perf_counter() - step_startt > 0.1:
+                        # wait for event dispatch and let piezo compensate during this time
+                        if NexlineState(self.data['Nexline.state']).name != 'MOVING':
+                            break
+                    
+
+                    # control tip tilt and adjust projected position while moving
+                    projected_opd = opd_start + (time.perf_counter() - move_startt) * velocity_target * 1000
+                    #print(projected_opd - self.data['IRCamera.mean_opd'][0])
+
+                    if time.time() - last_update_time > config.PIEZO_DA_LOOP_UPDATE_TIME:
+                        da1_level_orig = np.median(da1_buffer)
+                        da2_level_orig = np.median(da2_buffer)
+                        da1_buffer.clear()
+                        da2_buffer.clear()
+                        last_update_time = time.time()
+
+                    opd = float(self.data['IRCamera.mean_opd'][0])
+                    
+                    tip = np.median(self.data['IRCamera.tip_buffer'][:10])
+
+                    tilt = np.median(self.data['IRCamera.tilt_buffer'][:10])
+
+                    pid_opd_control.update_coeffs()
+
+                    pid_da1_control.update_config(
+                        out_min=da1_level_orig - config.PIEZO_DA_LOOP_MAX_V_DIFF,
+                        out_max=da1_level_orig + config.PIEZO_DA_LOOP_MAX_V_DIFF)
+
+                    pid_da2_control.update_config(
+                        out_min=da2_level_orig - config.PIEZO_DA_LOOP_MAX_V_DIFF,
+                        out_max=da2_level_orig + config.PIEZO_DA_LOOP_MAX_V_DIFF)
+
+                    # self.data['DAQ.piezos_level'][0] = pid_opd_control.update(
+                    #     control=self.data['DAQ.piezos_level'][0],
+                    #     setpoint=projected_opd,
+                    #     measurement=opd)
+
+                    # self.data['DAQ.piezos_level'][1] = pid_da1_control.update(
+                    #     control=self.data['DAQ.piezos_level'][1],
+                    #     setpoint=tip_target,
+                    #     measurement=tip)
+
+                    # self.data['DAQ.piezos_level'][2] = pid_da2_control.update(
+                    #     control=self.data['DAQ.piezos_level'][2],
+                    #     setpoint=tilt_target,
+                    #     measurement=tilt)
+                    
+                    self.poll()
+                    if self.events['Servo.stop'].is_set():
+                        return
+                    if self.events['Servo.open_loop'].is_set():
+                        return
+                    if self.data['Servo.is_lost'][0] == float(True):
+                        return
+
+                    time.sleep(config.OPD_LOOP_TIME)
+
+                except KeyboardInterrupt:
+                    log.error('Keyboard interrupt')
+                    self.events['Servo.stop'].set()
+                    return
+                
+            # compute real velocity on the whole movement
+            step_endpos = float(self.data['IRCamera.mean_opd'][0])
+            real_velocity = np.abs(step_endpos - opd_start) / (time.perf_counter() - move_startt) / 1e3 # in um/s
+            print('=========================', real_velocity)
+
+            # update nexline velocity to keep piezo near mid-range
+            # self.data['Nexline.moving_velocity'][0] = pid_nexline_control.update(
+            #     control = self.data['Nexline.moving_velocity'][0],
+            #     setpoint = 5,
+            #     measurement = self.data['DAQ.piezos_level'][0])
+            
+            
+        # to remove once everythin ok    
+        self.data['Servo.opd_target'][0] = self.data['IRCamera.mean_opd'][0]
+
     def _move_to_opd(self, _):
         log.info("Moving to OPD")
 
-        opd_target = self.data['Servo.opd_target'][0]
+        startt = time.time()
         
+        opd_target = self.data['Servo.opd_target'][0]
         log.info(f"   OPD target: {opd_target} nm")
+
+        # set nexline velocity at default moving velocity
+        self.data['Nexline.moving_velocity'][0] = config.NEXLINE_MOVING_VELOCITY
+
+        # centering OPD piezo at mid range
+        if not self._center_piezos():
+            log.error("Failed to center piezos, cannot move to OPD")
+            return
 
         # moving with Nexline until close enough for piezo reach
         while True:
@@ -479,13 +656,7 @@ class Servo(StateMachine):
             if opd_diff > config.PIEZO_MAX_OPD_DIFF/2.:
                 log.info(f'opd difference {opd_diff} too large for piezo reach, moving with Nexline')
         
-                self.events['Nexline.move'].set()
-        
-                time.sleep(0.1) # wait for event dispatch
-                while True: # wait for nexline move to finish
-                    if NexlineState(self.data['Nexline.state']).name != 'MOVING':
-                        break
-                    time.sleep(0.1)
+                self._move_with_nexline()
             else:
                 break
 
@@ -524,6 +695,7 @@ class Servo(StateMachine):
             time.sleep(config.OPD_LOOP_TIME)
             
 
+        log.info(f'finished moving in {time.time() - startt} s')
         log.info(f"OPD piezo at {opd}")
 
     def _close_loop(self, _):

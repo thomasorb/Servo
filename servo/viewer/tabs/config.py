@@ -85,9 +85,58 @@ class ConfigTab:
             _mk_bind_da(e, var, idx)
         ttk.Button(pid_da, text='Apply DA', command=self._apply_pid_da).grid(row=1, column=3, sticky='w')
 
+        # PID NEX
+        pid_nex = ttk.LabelFrame(self.root, text='PID NEXLINE', padding=10)
+        pid_nex.pack(side='top', anchor='nw', fill='x')
+        self.pid_nex_p = tk.DoubleVar(value=self._read_from_array('Servo.PID_NEXLINE', 0, 0.0))
+        self.pid_nex_i = tk.DoubleVar(value=self._read_from_array('Servo.PID_NEXLINE', 1, 0.0))
+        self.pid_nex_d = tk.DoubleVar(value=self._read_from_array('Servo.PID_NEXLINE', 2, 0.0))
+        for col, (label, var, idx) in enumerate((
+            ('P', self.pid_nex_p, 0),
+            ('I', self.pid_nex_i, 1),
+            ('D', self.pid_nex_d, 2),
+        )):
+            ttk.Label(pid_nex, text=label).grid(row=0, column=col, sticky='w', padx=(0,8), pady=(0,4))
+            e = ttk.Entry(pid_nex, textvariable=var, width=10)
+            e.grid(row=1, column=col, sticky='w', padx=(0,16), pady=(0,6))
+            def _mk_bind_nex(entry, v, index):
+                def _on_return(_evt=None):
+                    try:
+                        try:
+                            arr = self.viewer.nexta['Servo.PID_NEXLINE']
+                        except Exception:
+                            arr = None
+                        if arr is None or len(arr) < 3:
+                            self.viewer.data['Servo.PID_NEXLINE'] = np.array([0.0,0.0,0.0], dtype=self.viewer.config.NEXTA_DTYPE)
+                        self.viewer.data['Servo.PID_NEXLINE'][index] = float(v.get())
+                    except Exception:
+                        pass
+                entry.bind('<Return>', _on_return)
+            _mk_bind_nex(e, var, idx)
+        ttk.Button(pid_nex, text='Apply NEXLINE', command=self._apply_pid_nex).grid(row=1, column=3, sticky='w')
+
+        
+        # Profile inputs
+        prof = ttk.LabelFrame(self.root, text='Profile size', padding=10)
+        prof.pack(side='top', anchor='nw', fill='x')
+        top = ttk.Frame(prof); top.pack(side='top', anchor='nw', fill='x', pady=(0, 6))
+        colL = ttk.Frame(top); colL.pack(side='left', anchor='nw', padx=(0,10))
+        self.profile_len = tk.IntVar(value=self.viewer.data['IRCamera.profile_len'][0])
+        ttk.Label(colL, text='length').pack(side='top', anchor='w')
+        e = tk.Entry(colL, textvariable=self.profile_len, width=8)
+        e.pack(side='top', anchor='w', pady=4)
+        e.bind('<Return>', self.on_len_changed)
+        colW = ttk.Frame(top); colW.pack(side='left', anchor='nw', padx=(0,10))
+        self.profile_width = tk.IntVar(value=self.viewer.data['IRCamera.profile_width'][0])
+        ttk.Label(colW, text='width').pack(side='top', anchor='w')
+        e2 = tk.Entry(colW, textvariable=self.profile_width, width=8)
+        e2.pack(anchor='w', pady=4)
+        e2.bind('<Return>', self.on_width_changed)
+
+
     def _apply_pid_opd(self):
         try:
-            self.viewer.data['Servo.PID'][:3] = np.array(
+            self.viewer.data['Servo.PID_OPD'][:3] = np.array(
                 [self.pid_opd_p.get(), self.pid_opd_i.get(), self.pid_opd_d.get()]
             ).astype(self.viewer.config.DATA_DTYPE)
         except Exception:
@@ -99,12 +148,32 @@ class ConfigTab:
                 [self.pid_da_p.get(), self.pid_da_i.get(), self.pid_da_d.get()]
             ).astype(self.viewer.config.DATA_DTYPE)
         except Exception:
-            try:
-                self.viewer.data['Servo.PID_DA'] = np.array(
-                    [self.pid_da_p.get(), self.pid_da_i.get(), self.pid_da_d.get()],
-                    dtype=self.viewer.config.DATA_DTYPE
-                )
-            except Exception:
-                pass
+            pass
 
-            
+    def _apply_pid_nex(self):
+        try:
+            self.viewer.data['Servo.PID_NEXLINE'][:3] = np.array(
+                [self.pid_nex_p.get(), self.pid_nex_i.get(), self.pid_nex_d.get()]
+            ).astype(self.viewer.config.DATA_DTYPE)
+        except Exception: pass
+        
+    def on_len_changed(self, *_):
+        if self.viewer.main_tab._roi_mode:
+            self.profile_len.set(self.viewer.data['IRCamera.profile_len'][0])
+            return
+        n = int(self.profile_len.get())
+        n = utils.validate_roi_len(n)
+        self.viewer.data['IRCamera.profile_len'][0] = int(n)
+        try:
+            self.viewer.main_tab.hbar.set_count(n)
+            self.viewer.main_tab.vbar.set_count(n)
+            self.viewer.main_tab.update_profiles()
+        except Exception:
+            pass
+
+    def on_width_changed(self, *_):
+        w = int(self.profile_width.get())
+        if w % 2:
+            w += 1
+            self.profile_width.set(w)
+        self.viewer.data['IRCamera.profile_width'][0] = int(w)

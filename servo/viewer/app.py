@@ -35,17 +35,93 @@ class Viewer(core.Worker):
         style.theme_use('clam')
 
         # danger (red): STOP
-        style.configure('Danger.TButton', foreground='white', background='#d32f2f')
-        style.map('Danger.TButton',
-                  background=[('disabled', '#ef9a9a'),
-                              ('active',   '#b71c1c'),
-                              ('!disabled','#d32f2f')])
-        # warn (orange): NORMALIZE, Reset TIP-TILT
-        style.configure('Warn.TButton', foreground='black', background='#f39c12')
-        style.map('Warn.TButton',
-                  background=[('disabled', '#f8c471'),
-                              ('active',   '#d68910'),
-                              ('!disabled','#f39c12')])
+        style.configure(
+            'Red.TButton',
+            foreground='black',
+            background='#f2b6b6'     # pastel red
+        )
+        style.map(
+            'Red.TButton',
+            background=[
+                ('disabled', '#f7dcdc'),
+                ('active',   '#ec9d9d'),
+                ('!disabled','#f2b6b6')
+            ]
+        )
+        
+        # orange: NORMALIZE, Reset TIP-TILT
+        style.configure(
+            'Orange.TButton',
+            foreground='black',
+            background='#f7c79e'     # pastel orange
+        )
+        style.map(
+            'Orange.TButton',
+            background=[
+                ('disabled', '#f9e2cf'),
+                ('active',   '#f5b27a'),
+                ('!disabled','#f7c79e')
+            ]
+        )
+
+        # blue button style
+        style.configure(
+            'Blue.TButton',
+            foreground='black',
+            background='#a7c7e7'     # pastel blue
+        )
+        style.map(
+            'Blue.TButton',
+            background=[
+                ('disabled', '#d4e4f3'),
+                ('active',   '#8bb5e0'),
+                ('!disabled','#a7c7e7')
+            ]
+        )
+
+        # green button style
+        style.configure(
+            'Green.TButton',
+            foreground='black',
+            background='#a9dfbf'     # pastel green
+        )
+        style.map(
+            'Green.TButton',
+            background=[
+                ('disabled', '#d5f5e3'),
+                ('active',   '#82e0aa'),
+                ('!disabled','#a9dfbf')
+            ]
+        )
+
+        style.configure(
+            'Purple.TButton',
+            foreground='black',
+            background='#d7b9f7'     # pastel purple / light lavender
+        )
+        style.map(
+            'Purple.TButton',
+            background=[
+                ('disabled', '#eadcfb'),   # very light pastel
+                ('active',   '#c69df3'),   # slightly stronger pastel
+                ('!disabled','#d7b9f7')
+            ]
+        )
+
+        style.configure(
+            'Yellow.TButton',
+            foreground='black',
+            background='#f9e79f'     # pastel yellow (soft, non-aggressive)
+        )
+        style.map(
+            'Yellow.TButton',
+            background=[
+                ('disabled', '#fcf3cf'),   # very light pastel
+                ('active',   '#f7d774'),   # slightly
+                ('!disabled','#fcf3cf')
+            ]
+        )
+        
         
         # state
         self._close_loop = False
@@ -126,35 +202,38 @@ class Viewer(core.Worker):
 
         ttk.Button(toolbar, text='Reset Zoom', command=self.main_tab.reset_zoom).pack(side=tk.LEFT, padx=10)
 
-        # STOP (red)
-        self.stop_btn = ttk.Button(toolbar, text='STOP', style='Danger.TButton',
+        self.stop_btn = ttk.Button(toolbar, text='STOP', style='Red.TButton',
                                    command=lambda: self._set_event('Servo.stop'))
         self.stop_btn.pack(side=tk.RIGHT, padx=10)
 
-        # CLOSE/OPEN LOOP (toggle by state)
-        self.close_loop_btn = ttk.Button(toolbar, text='CLOSE LOOP', command=self.toggle_close_loop)
-        self.close_loop_btn.pack(side=tk.RIGHT, padx=10)
-
-        # NORMALIZE (orange)
-        self.normalize_btn = ttk.Button(toolbar, text='NORMALIZE', style='Warn.TButton',
-                                        command=lambda: self._set_event('Servo.normalize'))
-        self.normalize_btn.pack(side=tk.RIGHT, padx=10)
-
-        self.move_to_opd_btn = ttk.Button(toolbar, text='MOVE to OPD',
+        self.move_to_opd_btn = ttk.Button(toolbar, text='MOVE to OPD', style='Blue.TButton',
                                           command=lambda: self._set_event('Servo.move_to_opd'))
         self.move_to_opd_btn.pack(side=tk.RIGHT, padx=10)
 
-        # Reset TIP-TILT (orange)
-        self.reset_tiptilt_btn = ttk.Button(toolbar, text='Reset TIP-TILT', style='Warn.TButton',
+        self.walk_to_opd_btn = ttk.Button(toolbar, text='WALK to OPD', style='Green.TButton',
+                                          command=lambda: self._set_event('Servo.walk_to_opd'))
+        self.walk_to_opd_btn.pack(side=tk.RIGHT, padx=10)
+
+        self.close_loop_btn = ttk.Button(toolbar, text='CLOSE LOOP', style='Orange.TButton',
+                                         command=self.toggle_close_loop)
+        self.close_loop_btn.pack(side=tk.RIGHT, padx=10)
+
+        self.reset_tiptilt_btn = ttk.Button(toolbar, text='Reset TIP-TILT', style='Yellow.TButton',
                                             command=self._reset_tiptilt)
         self.reset_tiptilt_btn.pack(side=tk.RIGHT, padx=10)
 
-        self.roi_mode_btn = ttk.Button(toolbar, text='ROI MODE', command=self.toggle_roi_mode)
-        self.roi_mode_btn.pack(side=tk.RIGHT, padx=10)
+        self.normalize_btn = ttk.Button(toolbar, text='NORMALIZE', style='Yellow.TButton',
+                                        command=lambda: self._set_event('Servo.normalize'))
+        self.normalize_btn.pack(side=tk.RIGHT, padx=10)
 
-        self.reset_zpd_btn = ttk.Button(toolbar, text='Reset ZPD',
+        self.reset_zpd_btn = ttk.Button(toolbar, text='Reset ZPD', style='Orange.TButton',
                                         command=lambda: self._set_event('Servo.reset_zpd'))
         self.reset_zpd_btn.pack(side=tk.RIGHT, padx=10)
+
+        self.roi_mode_btn = ttk.Button(toolbar, text='ROI MODE', style='Purple.TButton',
+                                       command=self.toggle_roi_mode)
+        self.roi_mode_btn.pack(side=tk.RIGHT, padx=10)
+
 
         # initial sync (enable/disable according to current state)
         self._update_commands_enabled()
@@ -175,28 +254,34 @@ class Viewer(core.Worker):
         self.led_lost[0].pack(side=tk.LEFT, padx=6)
         
         self._build_piezos(self._right_col)
-        # Profile inputs
-        prof = ttk.LabelFrame(self._right_col, text='Profile size', padding=10)
-        prof.pack(fill=tk.X, expand=False, pady=15)
-        top = ttk.Frame(prof); top.pack(side='top', anchor='nw', fill='x', pady=(0, 6))
-        colL = ttk.Frame(top); colL.pack(side='left', anchor='nw', padx=(0,10))
-        self.profile_len = tk.IntVar(value=self.data['IRCamera.profile_len'][0])
-        ttk.Label(colL, text='length').pack(side='top', anchor='w')
-        e = tk.Entry(colL, textvariable=self.profile_len, width=8)
-        e.pack(side='top', anchor='w', pady=4)
-        e.bind('<Return>', self.on_len_changed)
-        colW = ttk.Frame(top); colW.pack(side='left', anchor='nw', padx=(0,10))
-        self.profile_width = tk.IntVar(value=self.data['IRCamera.profile_width'][0])
-        ttk.Label(colW, text='width').pack(side='top', anchor='w')
-        e2 = tk.Entry(colW, textvariable=self.profile_width, width=8)
-        e2.pack(anchor='w', pady=4)
-        e2.bind('<Return>', self.on_width_changed)
-        bot = ttk.Frame(prof); bot.pack(side='top', anchor='nw', fill='x')
+
+        # Move params inputs
+        move_frame = ttk.LabelFrame(self._right_col, text='Move parameters', padding=10)
+        move_frame.pack(fill=tk.X, expand=False, pady=15)
+
+        opd_row = ttk.Frame(move_frame); opd_row.pack(side='top', anchor='nw', fill='x')
+
         self.opd_target = tk.DoubleVar(value=self.data['Servo.opd_target'][0])
-        ttk.Label(bot, text='OPD target').pack(side='left', anchor='w', padx=(0,6))
-        e3 = tk.Entry(bot, textvariable=self.opd_target, width=8)
+        ttk.Label(opd_row, text='OPD target').pack(side='left', anchor='w', padx=(0,6))
+        e3 = tk.Entry(opd_row, textvariable=self.opd_target, width=12)
         e3.pack(side='left', anchor='w', pady=4)
         e3.bind('<Return>', self.on_opd_target_changed)
+        self.actual_opd_target = tk.StringVar(value='—')
+        ttk.Label(opd_row, textvariable=self.actual_opd_target).pack(
+            side='right', anchor='w', padx=(0,6))
+
+        velocity_row = ttk.Frame(move_frame); velocity_row.pack(side='top', anchor='nw', fill='x')
+
+        self.velocity_target = tk.DoubleVar(value=self.data['Servo.velocity_target'][0])
+        ttk.Label(velocity_row, text='Velocity target (um/s)').pack(side='left', anchor='w', padx=(0,6))
+        e3 = tk.Entry(velocity_row, textvariable=self.velocity_target, width=8)
+        e3.pack(side='left', anchor='w', pady=4)
+        e3.bind('<Return>', self.on_velocity_target_changed)
+        self.actual_velocity_target = tk.StringVar(value='—')
+        ttk.Label(velocity_row, textvariable=self.actual_velocity_target).pack(
+            side='right', anchor='w', padx=(0,6))
+
+
 
         # ROI preview
         self.roi_wrap = ttk.LabelFrame(self._right_col, text='ROI', padding=6)
@@ -290,7 +375,7 @@ class Viewer(core.Worker):
         st = self._servo_state()
         if st == ServoState.RUNNING:
             self._set_event('Servo.close_loop')
-        elif st == ServoState.STAY_AT_OPD:
+        elif st == ServoState.TRACKING:
             self._set_event('Servo.open_loop')
         # labels & enablement will be updated by next refresh/_update_status()
         
@@ -309,33 +394,18 @@ class Viewer(core.Worker):
             pass
 
     # handlers (right)
-    def on_len_changed(self, *_):
-        if self.main_tab._roi_mode:
-            self.profile_len.set(self.data['IRCamera.profile_len'][0])
-            return
-        n = int(self.profile_len.get())
-        n = utils.validate_roi_len(n)
-        self.data['IRCamera.profile_len'][0] = int(n)
-        try:
-            self.main_tab.hbar.set_count(n)
-            self.main_tab.vbar.set_count(n)
-            self.main_tab.update_profiles()
-        except Exception:
-            pass
-
-    def on_width_changed(self, *_):
-        w = int(self.profile_width.get())
-        if w % 2:
-            w += 1
-            self.profile_width.set(w)
-        self.data['IRCamera.profile_width'][0] = int(w)
-
     def on_opd_target_changed(self, *_):
         try:
             self.data['Servo.opd_target'][0] = float(self.opd_target.get())
         except Exception:
             pass
 
+    def on_velocity_target_changed(self, *_):
+        try:
+            self.data['Servo.velocity_target'][0] = float(self.velocity_target.get())
+        except Exception:
+            pass
+        
     # window state
     def _state_path(self):
         try:
@@ -409,26 +479,6 @@ class Viewer(core.Worker):
     # status
     def _update_status(self):
         try:
-            s_servo = ServoState(self.data['Servo.state'][0]).name
-        except Exception:
-            s_servo = '—'
-        try:
-            s_nx = NexlineState(self.data['Nexline.state'][0]).name
-        except Exception:
-            s_nx = '—'
-        try:
-            s_ir = WorkerState(self.data['IRCamera.state'][0]).name
-        except Exception:
-            s_ir = '—'
-        try:
-            s_daq = WorkerState(self.data['DAQ.state'][0]).name
-        except Exception:
-            s_daq = '—'
-        try:
-            s_sc = WorkerState(self.data['SerialComm.state'][0]).name
-        except Exception:
-            s_sc = '—'
-        try:
             mean_opd = float(self.data['IRCamera.mean_opd'][0])
         except Exception:
             mean_opd = float('nan')
@@ -451,15 +501,8 @@ class Viewer(core.Worker):
             drops = int(self.data['IRCamera.lost_frames'][0])
         except Exception:
             drops = 0
-
-        try:
-            opd_target = float(self.data['Servo.opd_target'][0])
-        except Exception:
-            opd_target = float('nan')
-
             
         s = (f"mean OPD: {utils.fwformat(mean_opd, 9)} nm | (std): {utils.fwformat(std_opd, 5, decimals=1)} nm",
-             f"OPD target: {utils.fwformat(opd_target, 9)} nm",
              f"fps: {utils.fwformat(fps/1e3, 4, decimals=1)} kHz | loop fps: {utils.fwformat(loop_fps/1e3, 4, decimals=1)} kHz | drops: {drops}/{config.IRCAM_BUFFER_SIZE}")
         self.status_var.set('\n'.join(s))
 
@@ -532,7 +575,7 @@ class Viewer(core.Worker):
 
     def _sync_close_loop_button(self, state):
         """Set button label to the next valid action based on current state."""
-        if state == ServoState.STAY_AT_OPD:
+        if state == ServoState.TRACKING:
             self.close_loop_btn.config(text='OPEN LOOP')
         else:
             # default -> if RUNNING, we show 'CLOSE LOOP'; otherwise keep this label too
@@ -551,22 +594,25 @@ class Viewer(core.Worker):
         """Enable/disable toolbar buttons according to Servo.state."""
         st = self._servo_state()
         
-        # STOP: disabled when loop is closed (STAY_AT_OPD)
-        self._set_enabled(self.stop_btn, st != ServoState.STAY_AT_OPD)
+        # STOP: disabled when loop is closed (TRACKING)
+        self._set_enabled(self.stop_btn, st != ServoState.TRACKING)
         
-        # CLOSE/OPEN LOOP enabled only in RUNNING or STAY_AT_OPD
-        can_loop_toggle = st in (ServoState.RUNNING, ServoState.STAY_AT_OPD)
+        # CLOSE/OPEN LOOP enabled only in RUNNING or TRACKING
+        can_loop_toggle = st in (ServoState.RUNNING, ServoState.TRACKING)
         self._set_enabled(self.close_loop_btn, bool(can_loop_toggle))
         self._sync_close_loop_button(st)
 
-        # NORMALIZE only in RUNNING or STAY_AT_OPD
-        self._set_enabled(self.normalize_btn, st == (ServoState.RUNNING or ServoState.STAY_AT_OPD))
+        # NORMALIZE only in RUNNING or TRACKING
+        self._set_enabled(self.normalize_btn, st == (ServoState.RUNNING or ServoState.TRACKING))
 
-        # MOVE to OPD only in STAY_AT_OPD
-        self._set_enabled(self.move_to_opd_btn, st == ServoState.STAY_AT_OPD)
+        # MOVE to OPD only in TRACKING
+        self._set_enabled(self.move_to_opd_btn, st == ServoState.TRACKING)
 
-        # Reset TIP-TILT in RUNNING or STAY_AT_OPD
-        self._set_enabled(self.reset_tiptilt_btn, st in (ServoState.RUNNING, ServoState.STAY_AT_OPD))
+        # WALK to OPD only in TRACKING
+        self._set_enabled(self.walk_to_opd_btn, st == ServoState.TRACKING)
+
+        # Reset TIP-TILT in RUNNING or TRACKING
+        self._set_enabled(self.reset_tiptilt_btn, st in (ServoState.RUNNING, ServoState.TRACKING))
 
         # ROI MODE (ROI/FF) transitions defined from RUNNING
         self._set_enabled(self.roi_mode_btn, st == ServoState.RUNNING)
@@ -651,6 +697,15 @@ class Viewer(core.Worker):
                 self.var_da2.set(float(levels[2]))
         except Exception:
             pass
+
+        # targets
+        try:
+            self.actual_opd_target.set(utils.fwformat(float(self.data['Servo.opd_target'][0]), 9) + ' nm')
+            self.actual_velocity_target.set(utils.fwformat(float(self.data['Servo.velocity_target'][0]), 5) + ' um/s')
+        except Exception:
+            self.actual_opd_target.set('—')
+            self.actual_velocity_target.set('—')
+            
         # schedule
         if not (self.stop_event and self.stop_event.is_set()):
             self.root.after(100, self.refresh)

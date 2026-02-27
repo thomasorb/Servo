@@ -33,13 +33,13 @@ class ServoEvent(IntEnum):
     ROI_MODE = auto()
     FULL_FRAME_MODE = auto()
     RESET_ZPD = auto()
+    WALK_TO_OPD = auto()
 
 class ServoState(IntEnum):
     IDLE = auto()
     RUNNING = auto()
     STOPPED = auto()
-    STAY_AT_OPD = auto()
-
+    TRACKING = auto()
 
 class WorkerState(IntEnum):
     IDLE = auto()

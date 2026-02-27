@@ -181,15 +181,9 @@ class Nexline(core.Worker, StateMachine):
         pass
     
     def on_enter_moving(self, _):
-        log.info('centering OPD piezo')
-        
-        self.data['DAQ.piezos_level'][0] = 5
-        while True:
-            if np.abs(self.data['DAQ.piezos_level_actual'][0] - 5) < 0.1:
-                break
                       
-        log.info('Moving Nexline')
-        self.set_velocity(50)
+        #log.info('Moving Nexline')
+        self.set_velocity(self.data['Nexline.moving_velocity'][0])
 
         opd = self.data['Servo.opd_target'][0] - self.data['IRCamera.mean_opd'][0]
         
@@ -199,13 +193,12 @@ class Nexline(core.Worker, StateMachine):
             step_nb = self.to_mpd(opd) / 1e3 / config.NEXLINE_STEP_SIZE
 
             log.info(f'moving at {velocity} um/s with a step size of {self.to_opd(config.NEXLINE_STEP_SIZE)} for {opd} nm ({step_nb} steps) (optical)')
-            #return
-            self.print_pos()
 
-            log.info(f'{self.pidevice.qSSA(config.NEXLINE_CHANNEL)}')
-            startt = time.time()
+            #log.info(f'{self.pidevice.qSSA(config.NEXLINE_CHANNEL)}')
+            #
             self.pidevice.OSM(config.NEXLINE_CHANNEL, step_nb)
 
+            startt = time.time()
             while True:
                 if not self.pidevice.qOSN(config.NEXLINE_CHANNEL)[1]:
                     break
@@ -224,9 +217,11 @@ class Nexline(core.Worker, StateMachine):
                 if (time.time() - startt) > config.NEXLINE_TIMEOUT:
                     log.error('Nexline move timeout')
                     break
+
+                time.sleep(0.01)
+                            
             
-            self.print_pos()
-            log.info(f'finished stepping in {time.time() - startt} s')
+            
         else:
             log.error(f'bad relative opd: {opd}')
 

@@ -47,10 +47,8 @@ class DAQ(core.Worker):
         self.last_levels = None
         
     def loop_once(self):
-        time.sleep(config.DAQ_LOOP_TIME)
-
         levels = self.data['DAQ.piezos_level'][:3]
-
+        
         # smooth level change on piezos
         if self.last_levels is None:
             self.last_levels = levels
@@ -77,6 +75,9 @@ class DAQ(core.Worker):
 
             self.data['DAQ.piezos_level_actual'][:3] = np.array(
                 levels, dtype=config.DAQ_PIEZO_LEVELS_DTYPE)
+            
+        time.sleep(config.DAQ_LOOP_TIME)
+
 
     def cleanup(self):
         try:
