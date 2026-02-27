@@ -269,29 +269,16 @@ class DataObserver(NITLibrary.NITUserObserver):
             if frame_time - self.last_viewer_out_time > config.IRCAM_VIEWER_OUTPUT_TIME:
                 self.last_viewer_out_time = frame_time
 
-                # Ensure last_frame has correct size (dim may change occasionally)
+                # Ensure last_frame has correct size 
                 expected_size = frame_data.shape[0] * frame_data.shape[1]
-                # If needed, recreate last_frame and roi to the new full-frame size
                 if expected_size != self.data['IRCamera.frame_size'][0]:
                     # Update metadata
                     self.arr_frame_dimx[0] = int(frame_data.shape[0])
                     self.arr_frame_dimy[0] = int(frame_data.shape[1])
                     self.arr_frame_size[0] = int(expected_size)
 
-                    # Recreate SHM segments for last_frame and roi (same names)
-                    self.data.ensure_size_and_dtype(
-                        'IRCamera.last_frame', (expected_size,), self.arr_last_frame.dtype)
-                    self.data.ensure_size_and_dtype(
-                        'IRCamera.roi', (expected_size,), self.arr_roi.dtype)
-
-                    # Refresh local views to the (possibly) remapped segments
-                    self.arr_last_frame = self.data['IRCamera.last_frame']
-                    self.arr_roi = self.data['IRCamera.roi']
-
                 # Copy transposed view directly (no flatten temp)
-                # Keep the transpose to preserve viewer orientation as before.
-                # Fast path: write column-by-column to 1D (Numba kernel)
-                #utils.copy_transpose_to_1d(frame_data, self.arr_last_frame[:expected_size])
+                # Keep the transpose to preserve viewer orientation
                 fast_copy_transpose(frame_data.astype(np.float32, copy=False),
                     self.arr_last_frame[:expected_size])
 

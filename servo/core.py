@@ -52,22 +52,12 @@ class SharedData(object):
             only_main_process_writes=True
         )
 
-        # --- Layout change indicator (bumped on any array resize) ---
-        self.add_value('IRCamera.layout_version', int(0), stored=False)
-
-        # --- Timers: 5 slots (ns): copy_viewer, compute_profiles, normalize_levels_opd, write_servo_buffers, total ---
-        # Also a small seqlock-like version for atomic read (even=stable)
-        self.add_array('IRCamera.timers_ns', np.zeros(5, dtype=np.int64), stored=False)
-        self.add_value('IRCamera.timers_version', int(0), stored=False)
-
-        # Existing allocations (unchanged)
         self.add_array('IRCamera.last_frame', np.zeros(config.FULL_FRAME_SIZE, dtype=config.FRAME_DTYPE))
         self.add_value('IRCamera.frame_size', int(config.FULL_FRAME_SIZE))
         self.add_value('IRCamera.frame_dimx', int(config.FULL_FRAME_SHAPE[0]))
         self.add_value('IRCamera.frame_dimy', int(config.FULL_FRAME_SHAPE[1]))
         self.add_value('IRCamera.initialized', False)
 
-        # Profiles (kept at max size to avoid frequent resizes)
         self.add_array('IRCamera.hprofile', np.zeros(config.FULL_FRAME_SHAPE[0], dtype=config.FRAME_DTYPE))
         self.add_array('IRCamera.vprofile', np.zeros(config.FULL_FRAME_SHAPE[1], dtype=config.FRAME_DTYPE))
         self.add_array('IRCamera.hprofile_normalized', np.zeros(config.FULL_FRAME_SHAPE[0], dtype=config.FRAME_DTYPE))
@@ -201,40 +191,6 @@ class SharedData(object):
 
     def __setitem__(self, name, value):
         self.arrs[name] = value
-
-    def resize_array(self, name, new_array):
-        """
-        Recreate the shared memory segment for 'name' with the shape/dtype of 'new_array'.
-        NOTE: other processes must re-open (re-map) 'name' after this call.
-        We bump 'IRCamera.layout_version' so readers can detect & remap.
-        """
-        # Close & unlink existing segment
-        shm = self.shms.get(name, None)
-        if shm is not None:
-            try:
-                shm.close()
-                shm.unlink()
-                log.info(f'recreated shared memory for {name}')
-            except FileNotFoundError:
-                log.warning(f'shared memory {name} could not be unlinked for resize')
-
-        # Create a fresh segment with same name
-        self.shms[name] = shared_memory.SharedMemory(create=True, name=name, size=new_array.nbytes)
-        self.arrs[name] = np.ndarray(new_array.shape, dtype=new_array.dtype, buffer=self.shms[name].buf)
-        self.arrs[name][:] = new_array
-
-        # Bump layout version once
-        self.arrs['IRCamera.layout_version'][0] += 1
-
-    def ensure_size_and_dtype(self, name, shape, dtype):
-        """
-        Ensure that shared array 'name' matches 'shape' and 'dtype'.
-        If not, it is recreated with zeros (and layout_version is bumped).
-        """
-        arr = self.arrs[name]
-        if arr.shape != tuple(shape) or arr.dtype != dtype:
-            zeroed = np.zeros(shape, dtype=dtype)
-            self.resize_array(name, zeroed)
 
     def keys(self):
         return self.arrs.keys()
