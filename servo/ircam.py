@@ -70,7 +70,7 @@ class IRCamera(core.Worker):
         self.dev << self.config_obs
         
         # Device Configuration
-
+        
         # #Get param value (2 ways)
         # print("Exposure:" + self.dev.paramStrValueOf( "Exposure Time" ) )
         # print("PixelClock:" + str( self.dev.paramValueOf( "Pixel Clock" ) ) )
@@ -187,6 +187,9 @@ class DataObserver(NITLibrary.NITUserObserver):
         self.arr_tilt       = self.data['IRCamera.tilt']
         self.arr_tip_buf    = self.data['IRCamera.tip_buffer']
         self.arr_tilt_buf   = self.data['IRCamera.tilt_buffer']
+        self.arr_time_buf       = self.data['IRCamera.time_buffer']
+        self.arr_velocity   = self.data['IRCamera.velocity']
+        self.arr_velocity_buf   = self.data['IRCamera.velocity_buffer']
         self.arr_full_output = self.data['IRCamera.full_output']
         
         # Servo coeffs
@@ -231,6 +234,8 @@ class DataObserver(NITLibrary.NITUserObserver):
         self.opd_deque = collections.deque(maxlen=config.SERVO_BUFFER_SIZE)
         self.tip_deque = collections.deque(maxlen=config.SERVO_BUFFER_SIZE)
         self.tilt_deque = collections.deque(maxlen=config.SERVO_BUFFER_SIZE)
+        self.time_deque = collections.deque(maxlen=config.SERVO_BUFFER_SIZE)
+        self.velocity_deque = collections.deque(maxlen=config.SERVO_BUFFER_SIZE)
         self.last_id = -1
 
         gc.freeze()
@@ -390,7 +395,11 @@ class DataObserver(NITLibrary.NITUserObserver):
                 self.arr_tip[0]  = tip
                 self.arr_tilt[0] = tilt
 
-
+                self.time_deque.appendleft(float(time.perf_counter()))
+                self.arr_time_buf[:min(
+                    len(self.time_deque), config.SERVO_BUFFER_SIZE)] = np.array(
+                        self.time_deque, dtype=config.FRAME_DTYPE)
+                
                 self.opd_deque.appendleft(float(mean_opd))
                 self.arr_mean_opd_buf[:min(
                     len(self.opd_deque), config.SERVO_BUFFER_SIZE)] = np.array(
@@ -407,6 +416,18 @@ class DataObserver(NITLibrary.NITUserObserver):
                 self.arr_tilt_buf[:min(
                     len(self.tilt_deque), config.SERVO_BUFFER_SIZE)] = np.array(
                         self.tilt_deque, dtype=config.FRAME_DTYPE)
+
+                if len(self.time_deque) > 1:
+                    velocity = ((self.opd_deque[0] - self.opd_deque[1])
+                                / (self.time_deque[0] - self.time_deque[1]))
+                else:
+                    velocity = np.nan
+                self.arr_velocity[0] = float(velocity)
+                self.velocity_deque.appendleft(float(velocity))
+                self.arr_velocity_buf[:min(
+                    len(self.velocity_deque), config.SERVO_BUFFER_SIZE)] = np.array(
+                        self.velocity_deque, dtype=config.FRAME_DTYPE)
+
                 
             self.arr_last_angles[:4] = self.angles_ws
             loop_time = time.perf_counter() - frame_time

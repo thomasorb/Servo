@@ -479,10 +479,14 @@ class Viewer(core.Worker):
     # status
     def _update_status(self):
         try:
-            mean_opd = float(self.data['IRCamera.mean_opd'][0])
+            mean_opd = float(np.mean(self.data['IRCamera.mean_opd_buffer'][:config.SERVO_BUFFER_SIZE]))
         except Exception:
             mean_opd = float('nan')
-        # std from data if available (fallback to NaN)
+        try:
+            velocity = float(np.mean(self.data['IRCamera.velocity_buffer'][:config.SERVO_BUFFER_SIZE]))
+        except Exception:
+            velocity = float('nan')
+
         try:
             std_opd = float(self.data['IRCamera.std_opd'][0])
         except Exception:
@@ -503,6 +507,7 @@ class Viewer(core.Worker):
             drops = 0
             
         s = (f"mean OPD: {utils.fwformat(mean_opd, 9)} nm | (std): {utils.fwformat(std_opd, 5, decimals=1)} nm",
+             f"velocity: {utils.fwformat(velocity, 9)} nm/s",
              f"fps: {utils.fwformat(fps/1e3, 4, decimals=1)} kHz | loop fps: {utils.fwformat(loop_fps/1e3, 4, decimals=1)} kHz | drops: {drops}/{config.IRCAM_BUFFER_SIZE}")
         self.status_var.set('\n'.join(s))
 
@@ -603,7 +608,7 @@ class Viewer(core.Worker):
         self._sync_close_loop_button(st)
 
         # NORMALIZE only in RUNNING or TRACKING
-        self._set_enabled(self.normalize_btn, st == (ServoState.RUNNING or ServoState.TRACKING))
+        self._set_enabled(self.normalize_btn, st in (ServoState.RUNNING, ServoState.TRACKING))
 
         # MOVE to OPD only in TRACKING
         self._set_enabled(self.move_to_opd_btn, st == ServoState.TRACKING)
@@ -617,8 +622,8 @@ class Viewer(core.Worker):
         # ROI MODE (ROI/FF) transitions defined from RUNNING
         self._set_enabled(self.roi_mode_btn, st == ServoState.RUNNING)
 
-        # Reset ZPD only in RUNNING
-        self._set_enabled(self.reset_zpd_btn, st == ServoState.RUNNING)
+        # Reset ZPD only in TRACKING
+        self._set_enabled(self.reset_zpd_btn, st == ServoState.TRACKING)
         
     # refresh loop
     def refresh(self):

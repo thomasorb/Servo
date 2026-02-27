@@ -27,6 +27,7 @@ DAQ_PIEZO_CHANNELS = [0, 4, 2] # OPD, DA-1, DA-2
 DAQ_CHANGE_SPEED = 5 # level change per second
 DAQ_LOOP_TIME = 0.01
 DAQ_MAX_LEVEL_CHANGE = DAQ_CHANGE_SPEED * DAQ_LOOP_TIME
+DAQ_PIEZO_OPD_PER_LEVEL = 2500 # nm/level (roughly)
 
 OPD_LOOP_TIME = 0.1  # 10 Hz loop
 PIEZO_V_MIN = 0.0
@@ -36,7 +37,7 @@ PIEZO_MAX_OPD_DIFF = 5000 # nm
 PIEZO_DA_LOOP_MAX_V_DIFF = 0.05 # max V diff when looping to avoid lost
 PIEZO_DA_LOOP_UPDATE_TIME = 10.0 # s, time to update new DA base values
 
-SERVO_BUFFER_SIZE = 20 # for servo values buffering
+SERVO_BUFFER_SIZE = 20 # for servo values buffering: servo updates are based on mean of this buffer
 SERVO_NORMALIZE_REC_TIME = 1.0 # s, time to record values for normalization coeffs computation
 SERVO_NORMALIZE_REC_SIZE = 10000 # s, time to record values for normalization coeffs computation
 VIEWER_BUFFER_SIZE = 1000 # for viewer servo values buffering

@@ -83,10 +83,14 @@ class SharedData(object):
         self.add_value('IRCamera.mean_opd_offset', float(0.), stored=True)
         self.add_value('IRCamera.tip', float(0.), stored=True)
         self.add_value('IRCamera.tilt', float(0.), stored=True)
+        self.add_value('IRCamera.velocity', float(0.))
 
-        self.add_array('IRCamera.mean_opd_buffer', np.full(config.SERVO_BUFFER_SIZE, np.nan, dtype=config.FRAME_DTYPE))
-        self.add_array('IRCamera.tip_buffer', np.full(config.SERVO_BUFFER_SIZE, np.nan, dtype=config.FRAME_DTYPE))
-        self.add_array('IRCamera.tilt_buffer', np.full(config.SERVO_BUFFER_SIZE, np.nan, dtype=config.FRAME_DTYPE))
+        
+        self.add_array('IRCamera.time_buffer', np.full(config.SERVO_BUFFER_SIZE, np.nan, dtype=config.DATA_DTYPE))
+        self.add_array('IRCamera.mean_opd_buffer', np.full(config.SERVO_BUFFER_SIZE, np.nan, dtype=config.DATA_DTYPE))
+        self.add_array('IRCamera.tip_buffer', np.full(config.SERVO_BUFFER_SIZE, np.nan, dtype=config.DATA_DTYPE))
+        self.add_array('IRCamera.tilt_buffer', np.full(config.SERVO_BUFFER_SIZE, np.nan, dtype=config.DATA_DTYPE))
+        self.add_array('IRCamera.velocity_buffer', np.full(config.SERVO_BUFFER_SIZE, np.nan, dtype=config.DATA_DTYPE))
 
         self.add_value('IRCamera.mean_sampling_time', float(np.nan))
         self.add_value('IRCamera.fps', float(np.nan))

@@ -233,11 +233,11 @@ class Servo(StateMachine):
                     last_update_time = time.time()
                 
         
-                opd = np.median(self.data['IRCamera.mean_opd_buffer'][:10])
+                opd = np.median(self.data['IRCamera.mean_opd_buffer'][:config.SERVO_BUFFER_SIZE])
 
-                tip = np.median(self.data['IRCamera.tip_buffer'][:10])
+                tip = np.median(self.data['IRCamera.tip_buffer'][:config.SERVO_BUFFER_SIZE])
 
-                tilt = np.median(self.data['IRCamera.tilt_buffer'][:10])
+                tilt = np.median(self.data['IRCamera.tilt_buffer'][:config.SERVO_BUFFER_SIZE])
                 
                 if not np.isnan(opd):
 
@@ -513,10 +513,10 @@ class Servo(StateMachine):
             out_min=da2_level_orig - config.PIEZO_DA_LOOP_MAX_V_DIFF,
             out_max=da2_level_orig + config.PIEZO_DA_LOOP_MAX_V_DIFF)
         
-        pid_nexline_control = self.get_pid_control(
-            'NEXLINE',
-            out_min=config.NEXLINE_MIN_VELOCITY,
-            out_max=config.NEXLINE_MAX_VELOCITY)
+        # pid_nexline_control = self.get_pid_control(
+        #     'NEXLINE',
+        #     out_min=config.NEXLINE_MIN_VELOCITY,
+        #     out_max=config.NEXLINE_MAX_VELOCITY)
 
         # set nexline velocity at target velocity
         self.data['Nexline.moving_velocity'][0] = self.data['Servo.velocity_target'][0]
@@ -533,9 +533,9 @@ class Servo(StateMachine):
         # compute initial OPD scale
         opd_start = self.data['IRCamera.mean_opd'][0]
         opd_diff = final_opd_target - opd_start
-        step_size = config.NEXLINE_STEP_SIZE * 1000 # nm
+        step_size = config.NEXLINE_STEP_SIZE /5 * 1000 # nm
         
-        opd_targets = np.arange(opd_start, final_opd_target, np.sign(opd_diff) * step_size)
+        opd_targets = np.arange(opd_start, final_opd_target, np.sign(opd_diff) * step_size)[1:]
 
         if opd_targets.size == 0 or opd_targets[-1] != final_opd_target:
             opd_targets = np.append(opd_targets, final_opd_target)
@@ -547,8 +547,10 @@ class Servo(StateMachine):
         move_startt = time.perf_counter()
         
         for opd_target in opd_targets:
+            
             # set next opd target and velocity
             self.data['Servo.opd_target'][0] = opd_target
+            self.data['Nexline.moving_velocity'][0] = self.data['Servo.velocity_target'][0]
 
             # move
             self.events['Nexline.move'].set()
@@ -560,11 +562,10 @@ class Servo(StateMachine):
                         # wait for event dispatch and let piezo compensate during this time
                         if NexlineState(self.data['Nexline.state']).name != 'MOVING':
                             break
-                    
+                            
 
                     # control tip tilt and adjust projected position while moving
                     projected_opd = opd_start + (time.perf_counter() - move_startt) * velocity_target * 1000
-                    #print(projected_opd - self.data['IRCamera.mean_opd'][0])
 
                     if time.time() - last_update_time > config.PIEZO_DA_LOOP_UPDATE_TIME:
                         da1_level_orig = np.median(da1_buffer)
@@ -573,11 +574,11 @@ class Servo(StateMachine):
                         da2_buffer.clear()
                         last_update_time = time.time()
 
-                    opd = float(self.data['IRCamera.mean_opd'][0])
+                    opd = np.median(self.data['IRCamera.mean_opd_buffer'][:config.SERVO_BUFFER_SIZE])
                     
-                    tip = np.median(self.data['IRCamera.tip_buffer'][:10])
+                    tip = np.median(self.data['IRCamera.tip_buffer'][:config.SERVO_BUFFER_SIZE])
 
-                    tilt = np.median(self.data['IRCamera.tilt_buffer'][:10])
+                    tilt = np.median(self.data['IRCamera.tilt_buffer'][:config.SERVO_BUFFER_SIZE])
 
                     pid_opd_control.update_coeffs()
 
@@ -589,10 +590,10 @@ class Servo(StateMachine):
                         out_min=da2_level_orig - config.PIEZO_DA_LOOP_MAX_V_DIFF,
                         out_max=da2_level_orig + config.PIEZO_DA_LOOP_MAX_V_DIFF)
 
-                    # self.data['DAQ.piezos_level'][0] = pid_opd_control.update(
-                    #     control=self.data['DAQ.piezos_level'][0],
-                    #     setpoint=projected_opd,
-                    #     measurement=opd)
+                    self.data['DAQ.piezos_level'][0] = pid_opd_control.update(
+                        control=self.data['DAQ.piezos_level'][0],
+                        setpoint=projected_opd,
+                        measurement=opd)
 
                     # self.data['DAQ.piezos_level'][1] = pid_da1_control.update(
                     #     control=self.data['DAQ.piezos_level'][1],
@@ -620,11 +621,32 @@ class Servo(StateMachine):
                     return
                 
             # compute real velocity on the whole movement
-            step_endpos = float(self.data['IRCamera.mean_opd'][0])
-            real_velocity = np.abs(step_endpos - opd_start) / (time.perf_counter() - move_startt) / 1e3 # in um/s
-            print('=========================', real_velocity)
+            # step_endpos = float(self.data['IRCamera.mean_opd'][0])
+            # real_velocity = np.abs(step_endpos - opd_start) / (time.perf_counter() - move_startt) / 1e3 # in um/s
+            # print('=========================', real_velocity)
 
-            # update nexline velocity to keep piezo near mid-range
+            # update nexline position to keep piezo near mid-range
+            piezo_diff = self.data['DAQ.piezos_level'][0] - 5
+            micro_step_opd_target = float(self.data['IRCamera.mean_opd'][0]) + piezo_diff * config.DAQ_PIEZO_OPD_PER_LEVEL
+            
+            
+            # set next opd target and velocity
+            self.data['Servo.opd_target'][0] = micro_step_opd_target
+            self.data['Nexline.moving_velocity'][0] = config.NEXLINE_MOVING_VELOCITY
+            # move
+            self.events['Nexline.move'].set()
+            step_startt = time.perf_counter()
+            
+            while True: # wait for nexline move to finish
+                if time.perf_counter() - step_startt > 0.1:
+                    # wait for event dispatch and let piezo compensate during this time
+                    if NexlineState(self.data['Nexline.state']).name != 'MOVING':
+                        break
+                    
+                time.sleep(config.OPD_LOOP_TIME)
+
+
+            
             # self.data['Nexline.moving_velocity'][0] = pid_nexline_control.update(
             #     control = self.data['Nexline.moving_velocity'][0],
             #     setpoint = 5,
@@ -632,7 +654,7 @@ class Servo(StateMachine):
             
             
         # to remove once everythin ok    
-        self.data['Servo.opd_target'][0] = self.data['IRCamera.mean_opd'][0]
+        #self.data['Servo.opd_target'][0] = self.data['IRCamera.mean_opd'][0]
 
     def _move_to_opd(self, _):
         log.info("Moving to OPD")
@@ -675,7 +697,7 @@ class Servo(StateMachine):
 
             pid_opd_control = self.get_pid_control('OPD')
             
-            opd = np.mean(self.data['IRCamera.mean_opd_buffer'][:10])
+            opd = np.mean(self.data['IRCamera.mean_opd_buffer'][:config.SERVO_BUFFER_SIZE])
             if not np.isnan(opd):
             
                 self.data['DAQ.piezos_level'][0] = pid_opd_control.update(
