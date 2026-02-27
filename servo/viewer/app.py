@@ -22,6 +22,9 @@ class Viewer(core.Worker):
 
     def __init__(self, data, events):
         super().__init__(data, events)
+
+        self.config = config
+        
         self.root = tk.Tk()
         self.root.title('IRCamera Viewer')
         self.root.geometry('1280x900')

@@ -2,6 +2,10 @@ import tkinter as tk
 from tkinter import ttk
 import numpy as np
 
+import logging
+
+log = logging.getLogger(__name__)
+
 class ConfigTab:
     """PID config panels."""
 
@@ -107,7 +111,7 @@ class ConfigTab:
                         except Exception:
                             arr = None
                         if arr is None or len(arr) < 3:
-                            self.viewer.data['Servo.PID_NEXLINE'] = np.array([0.0,0.0,0.0], dtype=self.viewer.config.NEXTA_DTYPE)
+                            self.viewer.data['Servo.PID_NEXLINE'] = np.array([0.0,0.0,0.0], dtype=self.viewer.config.DATA_DTYPE)
                         self.viewer.data['Servo.PID_NEXLINE'][index] = float(v.get())
                     except Exception:
                         pass
@@ -139,23 +143,24 @@ class ConfigTab:
             self.viewer.data['Servo.PID_OPD'][:3] = np.array(
                 [self.pid_opd_p.get(), self.pid_opd_i.get(), self.pid_opd_d.get()]
             ).astype(self.viewer.config.DATA_DTYPE)
-        except Exception:
-            pass
+        except Exception as e:
+            log.error(f'error when applying OPD PID: {e}')
 
     def _apply_pid_da(self):
         try:
             self.viewer.data['Servo.PID_DA'][:3] = np.array(
                 [self.pid_da_p.get(), self.pid_da_i.get(), self.pid_da_d.get()]
             ).astype(self.viewer.config.DATA_DTYPE)
-        except Exception:
-            pass
-
+        except Exception as e:
+            log.error(f'error when applying OPD DA: {e}')
+            
     def _apply_pid_nex(self):
         try:
             self.viewer.data['Servo.PID_NEXLINE'][:3] = np.array(
                 [self.pid_nex_p.get(), self.pid_nex_i.get(), self.pid_nex_d.get()]
             ).astype(self.viewer.config.DATA_DTYPE)
-        except Exception: pass
+        except Exception as e:
+            log.error(f'error when applying OPD NEX: {e}')
         
     def on_len_changed(self, *_):
         if self.viewer.main_tab._roi_mode:

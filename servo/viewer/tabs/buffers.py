@@ -94,7 +94,8 @@ class BuffersTab:
         ttk.Button(presets, text='OPD mean', command=self._preset_opd_mean).pack(side=tk.LEFT, padx=4)
         ttk.Button(presets, text='OPD std', command=self._preset_opd_std).pack(side=tk.LEFT, padx=4)
         ttk.Button(presets, text='Piezos', command=self._preset_piezos).pack(side=tk.LEFT, padx=4)
-
+        ttk.Button(presets, text='Velocity mean', command=self._preset_velocity_mean).pack(side=tk.LEFT, padx=4)
+        
         # figure
         fig_wrap = ttk.LabelFrame(right, text='Time series', padding=6)
         fig_wrap.pack(fill=tk.BOTH, expand=True)
@@ -267,6 +268,9 @@ class BuffersTab:
     # ---------- Presets ----------
     def _preset_opd_mean(self):
         self._add_series('IRCamera.mean_opd', reducer='value', label='OPD mean')
+
+    def _preset_velocity_mean(self):
+        self._add_series('IRCamera.velocity_buffer', reducer='mean', label='Velocity mean')
 
     def _preset_opd_std(self):
         self._add_series('IRCamera.mean_opd_buffer', reducer='std', label='OPD std')
