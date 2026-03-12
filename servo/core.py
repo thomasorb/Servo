@@ -3,6 +3,7 @@ import logging
 from multiprocessing import shared_memory
 
 from . import config
+from . import params
 from . import state_store
 
 from .fsm import WorkerState
@@ -79,18 +80,9 @@ class SharedData(object):
         self.add_array('IRCamera.last_angles', np.zeros(4, dtype=config.FRAME_DTYPE), stored=True)
         self.add_array('IRCamera.opds', np.zeros(4, dtype=config.FRAME_DTYPE), stored=True)
         self.add_value('IRCamera.mean_opd', float(0.))
-        self.add_value('IRCamera.std_opd', float(np.nan))
         self.add_value('IRCamera.mean_opd_offset', float(0.), stored=True)
         self.add_value('IRCamera.tip', float(0.), stored=True)
         self.add_value('IRCamera.tilt', float(0.), stored=True)
-        self.add_value('IRCamera.velocity', float(0.))
-
-        
-        self.add_array('IRCamera.time_buffer', np.full(config.SERVO_BUFFER_SIZE, np.nan, dtype=config.DATA_DTYPE))
-        self.add_array('IRCamera.mean_opd_buffer', np.full(config.SERVO_BUFFER_SIZE, np.nan, dtype=config.DATA_DTYPE))
-        self.add_array('IRCamera.tip_buffer', np.full(config.SERVO_BUFFER_SIZE, np.nan, dtype=config.DATA_DTYPE))
-        self.add_array('IRCamera.tilt_buffer', np.full(config.SERVO_BUFFER_SIZE, np.nan, dtype=config.DATA_DTYPE))
-        self.add_array('IRCamera.velocity_buffer', np.full(config.SERVO_BUFFER_SIZE, np.nan, dtype=config.DATA_DTYPE))
 
         self.add_value('IRCamera.mean_sampling_time', float(np.nan))
         self.add_value('IRCamera.fps', float(np.nan))
@@ -132,20 +124,12 @@ class SharedData(object):
         self.add_value('Servo.tip_target', float(0.), stored=True)
         self.add_value('Servo.tilt_target', float(0.), stored=True)
         self.add_value('Servo.velocity_target', float(config.NEXLINE_MOVING_VELOCITY), stored=True)
-        
-
-        
-        self.add_array('Servo.PID_OPD', np.array(config.DEFAULT_PID_OPD).astype(config.DATA_DTYPE),
-                       stored=True)
-
-        self.add_array('Servo.PID_DA', np.array(config.DEFAULT_PID_DA).astype(config.DATA_DTYPE),
-                       stored=True)
-
-        self.add_array('Servo.PID_NEXLINE', np.array(config.DEFAULT_PID_NEXLINE).astype(config.DATA_DTYPE),
-                       stored=True)
-
 
         self.add_value('Servo.is_lost', True, stored=False)
+        self.add_value('Servo.track_loop_time', float(np.nan), stored=False)
+        self.add_value('Servo.walk_loop_time', float(np.nan), stored=False)
+        
+        self.add_value('Servo.walk_velocity', float(np.nan), stored=False)
         
         self.add_array('DAQ.piezos_level',
                        np.zeros(3, dtype=config.DAQ_PIEZO_LEVELS_DTYPE),
@@ -155,7 +139,10 @@ class SharedData(object):
                        np.zeros(3, dtype=config.DAQ_PIEZO_LEVELS_DTYPE),
                        stored=True)
         self.add_value('DAQ.state', float(0), stored=False)
-
+        self.add_value('DAQ.loop_time', float(0), stored=False)
+        self.add_value('DAQ.frequency', float(0), stored=False)
+        
+        
         self.add_value('Nexline.state', float(0), stored=False)
         self.add_value('Nexline.moving_velocity', float(config.NEXLINE_MOVING_VELOCITY), stored=False)
         
@@ -165,6 +152,32 @@ class SharedData(object):
         self.add_value('Viewer.state', float(0), stored=False)
 
         self.add_array('SerialComm.last_status_frame', np.zeros(config.SERIAL_STATUS_FRAME_SIZE, dtype=np.uint8), stored=False)
+
+        self.add_value('Tracker.state', float(0), stored=False)
+        self.add_value('Tracker.frequency', float(np.nan), stored=False)
+        frequencies = [int(ifreq) for ifreq in config.TRACKER_STATS_FREQUENCIES]
+        for ifreq in frequencies:
+            self.add_value(f'Tracker.opd_{ifreq}', float(np.nan), stored=False)
+            self.add_value(f'Tracker.tip_{ifreq}', float(np.nan), stored=False)
+            self.add_value(f'Tracker.tilt_{ifreq}', float(np.nan), stored=False)
+            self.add_value(f'Tracker.opd_std_{ifreq}', float(np.nan), stored=False)
+            self.add_value(f'Tracker.velocity_{ifreq}', float(np.nan), stored=False)
+        
+        # record also config values
+        for ikey in [k for k in dir(params) if k.isupper()]:
+            _attr = getattr(params, ikey)
+            if isinstance(_attr, str):
+                continue
+            if isinstance(_attr, type):
+                continue
+            
+            try:
+                iter(_attr)
+            except TypeError:
+                self.add_value(f'params.{ikey}', _attr, stored=True)
+            else:
+                self.add_array(f'params.{ikey}', np.array(_attr), stored=True)
+        
         
 
     def add_array(self, name, array, stored=False):

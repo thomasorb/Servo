@@ -237,8 +237,11 @@ class Viewer(core.Worker):
                                        command=self.toggle_roi_mode)
         self.roi_mode_btn.pack(side=tk.RIGHT, padx=10)
 
-
-        # initial sync (enable/disable according to current state)
+        self.calibrate_velocity_btn = ttk.Button(toolbar, text='Calibrate Velocity',
+                                                 command=lambda: self._set_event('Servo.calibrate_velocity'))
+        self.calibrate_velocity_btn.pack(side=tk.RIGHT, padx=10)
+        
+                                                         # initial sync (enable/disable according to current state)
         self._update_commands_enabled()
         
     # right column
@@ -391,8 +394,8 @@ class Viewer(core.Worker):
 
     def _reset_tiptilt(self):
         try:
-            self.data['Servo.tip_target'][0] = float(np.mean(self.data['IRCamera.tip_buffer'][:config.IRCAM_BUFFER_SIZE]))
-            self.data['Servo.tilt_target'][0] = float(np.mean(self.data['IRCamera.tilt_buffer'][:config.IRCAM_BUFFER_SIZE]))
+            self.data['Servo.tip_target'][0] = float(self.data['Tracker.tip_3'][0])
+            self.data['Servo.tilt_target'][0] = float(self.data['Tracker.tilt_3'][0])
         except Exception:
             pass
 
@@ -482,16 +485,16 @@ class Viewer(core.Worker):
     # status
     def _update_status(self):
         try:
-            mean_opd = float(np.mean(self.data['IRCamera.mean_opd_buffer'][:config.SERVO_BUFFER_SIZE]))
+            mean_opd = float(self.data['Tracker.opd_1'][0])
         except Exception:
             mean_opd = float('nan')
         try:
-            velocity = float(np.mean(self.data['IRCamera.velocity_buffer'][:config.SERVO_BUFFER_SIZE]))
+            velocity = float(self.data['Tracker.velocity_1'][0])
         except Exception:
             velocity = float('nan')
 
         try:
-            std_opd = float(self.data['IRCamera.std_opd'][0])
+            std_opd = float(self.data['Tracker.opd_std_1'][0])
         except Exception:
             std_opd = float('nan')
         try:
@@ -539,8 +542,9 @@ class Viewer(core.Worker):
                 self.var_da2.set(float(init[2]))
         except Exception:
             pass
-        self.piezo_step = 0.01
-        def _nudge(var: tk.DoubleVar, scl: tk.Scale, delta: float):
+        
+        def _nudge(var: tk.DoubleVar, scl: tk.Scale, delta_param: str, direction: float = 1.0):
+            delta = self.data[f'params.PIEZO_{delta_param}'][0]
             try: v = float(var.get()) + float(delta)
             except Exception: v = 0.0
             vmin = min(float(scl['from']), float(scl['to']))
@@ -556,10 +560,16 @@ class Viewer(core.Worker):
                            command=self._on_piezos_change)
             scl.pack()
             btns = ttk.Frame(colf); btns.pack(pady=(6,0))
-            ttk.Button(btns, text='-', width=2,
-                       command=lambda: _nudge(var, scl, -self.piezo_step)).pack(side=tk.LEFT, padx=(0,4))
-            ttk.Button(btns, text='+', width=2,
-                       command=lambda: _nudge(var, scl, +self.piezo_step)).pack(side=tk.LEFT)
+            if 'DA' in label:
+                _piezo_type = 'DA'
+            else:
+                _piezo_type = 'OPD'
+            ttk.Button(btns, text='-', width=1.5,
+                       command=lambda: _nudge(var, scl, _piezo_type + '_STEP', -1)).pack(side=tk.LEFT)
+            ttk.Button(btns, text='+', width=1.5,
+                       command=lambda: _nudge(var, scl, _piezo_type + '_STEP', +1)).pack(side=tk.LEFT)
+            ttk.Button(btns, text='d', width=1.5,
+                       command=lambda: _nudge(var, scl, _piezo_type + '_DIRAC', +1)).pack(side=tk.LEFT)
             return scl
         self.scale_opd = _col('OPD', self.var_opd, 0)
         self.scale_da1 = _col('DA-1', self.var_da1, 1)

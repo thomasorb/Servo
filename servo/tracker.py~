@@ -1,0 +1,15 @@
+import logging
+import time
+import numpy as np
+import traceback
+
+from . import core
+from . import config
+
+log = logging.getLogger(__name__)
+
+
+class Tracker(core.Worker):
+
+    def __init__(self, data, events):
+        super().__init__(data, events)

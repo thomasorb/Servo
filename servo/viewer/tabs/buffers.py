@@ -91,10 +91,11 @@ class BuffersTab:
         # presets
         presets = ttk.LabelFrame(right, text='Presets', padding=6)
         presets.pack(fill=tk.X, pady=(0, 8))
-        ttk.Button(presets, text='OPD mean', command=self._preset_opd_mean).pack(side=tk.LEFT, padx=4)
+        ttk.Button(presets, text='OPD', command=self._preset_opd_mean).pack(side=tk.LEFT, padx=4)
+        ttk.Button(presets, text='TIP/TILT', command=self._preset_tip_tilt).pack(side=tk.LEFT, padx=4)
         ttk.Button(presets, text='OPD std', command=self._preset_opd_std).pack(side=tk.LEFT, padx=4)
         ttk.Button(presets, text='Piezos', command=self._preset_piezos).pack(side=tk.LEFT, padx=4)
-        ttk.Button(presets, text='Velocity mean', command=self._preset_velocity_mean).pack(side=tk.LEFT, padx=4)
+        ttk.Button(presets, text='Velocity', command=self._preset_velocity_mean).pack(side=tk.LEFT, padx=4)
         
         # figure
         fig_wrap = ttk.LabelFrame(right, text='Time series', padding=6)
@@ -267,13 +268,17 @@ class BuffersTab:
 
     # ---------- Presets ----------
     def _preset_opd_mean(self):
-        self._add_series('IRCamera.mean_opd', reducer='value', label='OPD mean')
+        self._add_series('Tracker.opd_10', reducer='value', label='OPD')
 
     def _preset_velocity_mean(self):
-        self._add_series('IRCamera.velocity_buffer', reducer='mean', label='Velocity mean')
+        self._add_series('Tracker.velocity_3', reducer='value', label='Velocity')
+
+    def _preset_tip_tilt(self):
+        self._add_series('Tracker.tip_10', reducer='value', label='Tip')
+        self._add_series('Tracker.tilt_10', reducer='value', label='Tilt')
 
     def _preset_opd_std(self):
-        self._add_series('IRCamera.mean_opd_buffer', reducer='std', label='OPD std')
+        self._add_series('Tracker.opd_std_10', reducer='value', label='OPD std')
 
     def _preset_piezos(self):
         labels = ('OPD', 'DA-1', 'DA-2')
@@ -299,7 +304,7 @@ class BuffersTab:
 
         # draw (throttle ~10 fps)
         now = time.perf_counter()
-        if self._last_draw and (now - self._last_draw) < 0.10:
+        if self._last_draw and (now - self._last_draw) < 0.05:
             return
         self._last_draw = now
 

@@ -585,3 +585,307 @@ def publish_timers_ns(timers_ns, timers_version, v0, v1, v2, v3, v4):
     timers_version[0] += 1
     if (timers_version[0] & 1) == 1:
         timers_version[0] += 1
+
+
+def mean_two_slices(a: np.ndarray, b: np.ndarray | None = None):
+    """
+    Mean over up to two non-contiguous NumPy views (no copy).
+    Returns np.nan if there are no elements.
+    """
+    if b is None:
+        return np.nan if a.size == 0 else a.mean(dtype=np.float64)
+    n1 = a.size; n2 = b.size
+    if n1 + n2 == 0:
+        return np.nan
+    s = a.sum(dtype=np.float64) + b.sum(dtype=np.float64)
+    return s / (n1 + n2)
+
+
+def std_two_slices(a: np.ndarray, b: np.ndarray | None = None, ddof: int = 0):
+    """
+    Standard deviation over up to two non-contiguous views (no copy).
+    Uses a numerically stable two-pass equivalent via sum and sum of squares.
+    
+    Parameters
+    ----------
+    a, b : np.ndarray
+        Up to two views composing the logical window.
+    ddof : int
+        0 for population std, 1 for sample std (unbiased variance).
+    """
+    if b is None:
+        n = a.size
+        if n == 0 or n - ddof <= 0:
+            return np.nan
+        s = a.sum(dtype=np.float64)
+        sq = np.dot(a.astype(np.float64), a.astype(np.float64))
+    else:
+        n = a.size + b.size
+        if n == 0 or n - ddof <= 0:
+            return np.nan
+        s = a.sum(dtype=np.float64) + b.sum(dtype=np.float64)
+        # sum of squares without copy
+        sq = (np.dot(a.astype(np.float64), a.astype(np.float64)) +
+              np.dot(b.astype(np.float64), b.astype(np.float64)))
+
+    # Var with ddof support:
+    # population: var = E[x^2] - (E[x])^2
+    # sample:     var = (sum(x^2) - sum(x)^2/n) / (n - 1)
+    if ddof == 0:
+        mean = s / n
+        var = sq / n - mean * mean
+    else:
+        var = (sq - (s * s) / n) / (n - ddof)
+
+    # Numerical guard: avoid tiny negative due to round-off
+    return float(np.sqrt(var if var > 0.0 else 0.0))
+
+
+def median_two_slices(a: np.ndarray, b: np.ndarray | None = None):
+    """
+    Exact median over up to two non-contiguous views.
+    This allocates a temporary buffer of size N for the selection step.
+    """
+    if b is None:
+        n = a.size
+        if n == 0:
+            return np.nan
+        # np.median will copy anyway for non-contiguous stride; we can fast-path:
+        return float(np.median(a))
+
+    n = a.size + b.size
+    if n == 0:
+        return np.nan
+
+    # Minimal copy: gather into a temporary 1D array, then nth-element selection
+    tmp = np.empty(n, dtype=np.float64)
+    tmp[:a.size] = a
+    tmp[a.size:] = b
+
+    k = n // 2
+    if n % 2 == 1:
+        # nth-element for odd length
+        return float(np.partition(tmp, k)[k])
+    else:
+        # average of the two middle elements
+        lo = np.partition(tmp, k - 1)[k - 1]
+        hi = np.partition(tmp, k)[k]
+        return float((lo + hi) / 2.0)
+
+class RingBuffer:
+    """
+    Fixed-size ring buffer backed by a pre-allocated NumPy array.
+    Designed for frequent numeric computations without copies.
+
+    Notes
+    -----
+    - Append is O(1), no shifting/rolling.
+    - Chronological order is logical: data[head:] then data[:head] when wrapped.
+    - To avoid copies during computations, prefer the *slices* APIs that return
+      at most two NumPy views (no concatenation).
+    """
+
+    def __init__(self, size, dtype=np.float32):
+        self.size = int(size)
+        self.data = np.empty(self.size, dtype=dtype)
+        self.head = 0         # next write index
+        self.full = False     # becomes True once wrapped
+
+    def append(self, value):
+        """Append a single value at the head position (O(1))."""
+        self.data[self.head] = value
+        self.head += 1
+        if self.head >= self.size:
+            self.head = 0
+            self.full = True
+
+    def clear(self):
+        """Drop all content in O(1)."""
+        self.head = 0
+        self.full = False
+
+    def slices_ordered(self):
+        """
+        Return at most two views (no copy) representing the entire content
+        in chronological order: (tail_view, head_view_or_None).
+        - If not full: returns (data[:head], None).
+        - If wrapped : returns (data[head:], data[:head]).
+        """
+        if not self.full:
+            return (self.data[:self.head], None)
+        return (self.data[self.head:], self.data[:self.head])
+
+    def last_slices(self, n):
+        """
+        Return up to two views (no copy) for the last n samples in chronological order.
+        Parameters
+        ----------
+        n : int
+            Number of most-recent elements to consider.
+        Returns
+        -------
+        (view1, view2_or_None)
+            Two slices (views) that, concatenated, represent the last n samples.
+        """
+        if n <= 0:
+            return (self.data[:0], None)  # empty view
+        total = self.size if self.full else self.head
+        n = min(int(n), total)
+        if n == 0:
+            return (self.data[:0], None)
+
+        # Compute start index in physical buffer
+        start = (self.head - n) % self.size
+
+        if not self.full:
+            # Data is contiguous from 0 to head
+            return (self.data[start:self.head], None)
+
+        # Wrapped case:
+        if start < self.head:
+            # Still contiguous between start and head (within the early segment)
+            return (self.data[start:self.head], None)
+        else:
+            # Split across the end and beginning
+            return (self.data[start:], self.data[:self.head])
+
+    def ordered_slice(self, start=None, stop=None, copy=False):
+        """
+        Slice into the logical (chronological) view without building it first.
+        Indices refer to the chronological sequence [oldest .. newest).
+
+        Parameters
+        ----------
+        start : int or None
+            Start index in chronological order (inclusive). Defaults to 0.
+        stop : int or None
+            Stop index in chronological order (exclusive). Defaults to current length.
+        copy : bool
+            If True, return a single contiguous array (copy if needed).
+            If False, return up to two views ((view1, view2_or_None)).
+
+        Returns
+        -------
+        If copy=True:
+            np.ndarray (possibly a view if contiguous, otherwise a concatenated copy).
+        If copy=False:
+            tuple[np.ndarray, np.ndarray|None]
+        """
+        # Current logical length
+        length = self.size if self.full else self.head
+
+        # Normalize slice bounds like Python slicing
+        if start is None:
+            start = 0
+        if stop is None:
+            stop = length
+
+        # Handle negatives relative to length
+        if start < 0: start += length
+        if stop  < 0: stop  += length
+
+        # Clamp to [0, length]
+        start = max(0, min(start, length))
+        stop  = max(0, min(stop,  length))
+
+        if stop <= start:
+            if copy:
+                return self.data[:0]  # empty array view
+            return (self.data[:0], None)
+
+        # Map [start, stop) in chronological indices to physical indices
+        # Oldest index in physical space:
+        oldest = 0 if not self.full else self.head
+        # Physical start/stop
+        p_start = (oldest + start) % self.size
+        p_stop  = (oldest + stop) % self.size
+
+        if not self.full:
+            # Physical data is contiguous [0:head)
+            if copy:
+                return self.data[p_start:p_stop]  # view, contiguous
+            return (self.data[p_start:p_stop], None)
+
+        # Wrapped data case:
+        if p_start < p_stop:
+            # Contiguous within one physical segment
+            if copy:
+                return self.data[p_start:p_stop]
+            return (self.data[p_start:p_stop], None)
+        else:
+            # Split across end → two segments
+            if copy:
+                return np.concatenate((self.data[p_start:], self.data[:p_stop]))
+            return (self.data[p_start:], self.data[:p_stop])
+
+    def view_ordered(self):
+        """
+        Return the entire content in chronological order as a single array.
+        This will concatenate if wrapped (copy). Prefer `slices_ordered()` to avoid copies.
+        """
+        a, b = self.slices_ordered()
+        if b is None:
+            return a
+        return np.concatenate((a, b))
+
+    def __len__(self):
+        """Number of valid samples currently stored."""
+        return self.size if self.full else self.head
+
+    def __getitem__(self, key):
+        """
+        Support Python slicing on the *chronological* view.
+        Examples
+        --------
+        rb[-1024:]     # last 1024 samples
+        rb[100:200]    # samples from 100 to 199 in chronological order
+        Notes
+        -----
+        - To respect Python's sequence protocol, this returns a single ndarray.
+          If the slice spans the wrap point, a concatenation (copy) is performed.
+        - To avoid copies, use `last_slices(n)` or `ordered_slice(start, stop, copy=False)`.
+        """
+        if isinstance(key, slice):
+            start = key.start
+            stop = key.stop
+            # step is not supported (keep it simple)
+            if key.step not in (None, 1):
+                raise ValueError("Slicing with step is not supported.")
+            return self.ordered_slice(start, stop, copy=True)
+
+        # Single index (allow negative indexing)
+        idx = int(key)
+        length = len(self)
+        if idx < 0:
+            idx += length
+        if idx < 0 or idx >= length:
+            raise IndexError("RingBuffer index out of range")
+
+        # Map to physical index
+        oldest = 0 if not self.full else self.head
+        p = (oldest + idx) % self.size
+        return self.data[p]
+
+    def mean_last(self, n: int):
+        """
+        Mean of the last n samples (no copy).
+        """
+        v1, v2 = self.last_slices(n)
+        return mean_two_slices(v1, v2)
+
+    def std_last(self, n: int, ddof: int = 0):
+        """
+        Standard deviation of the last n samples (no copy).
+        ddof=0 -> population, ddof=1 -> sample.
+        """
+        v1, v2 = self.last_slices(n)
+        return std_two_slices(v1, v2, ddof=ddof)
+
+    def median_last(self, n: int):
+        """
+        Median of the last n samples.
+        Requires a temporary array of size n (copy), which is unavoidable
+        for exact median without modifying callers to accept two slices.
+        """
+        v1, v2 = self.last_slices(n)
+        return median_two_slices(v1, v2)

@@ -7,8 +7,8 @@ LASER_ANGLE = 25 # angle of the laser in degrees
 #ROI_SIZE = np.prod(ROI_SHAPE)
 
 IRCAM_DEFAULT_EXPOSURE_TIME = '1us'
-IRCAM_SERVO_OUTPUT_TIME = 0.05 #s
-IRCAM_VIEWER_OUTPUT_TIME = 0.2 #s
+IRCAM_SERVO_OUTPUT_TIME = 0.005 #s
+IRCAM_VIEWER_OUTPUT_TIME = 0.1 #s
 
 IRCAM_BUFFER_SIZE = 100
 IRCAM_LOST_THRESHOLD = CALIBRATION_LASER_WAVELENGTH / 2 * 0.8 # nm (80% of lambda/2 to be safe)
@@ -24,18 +24,16 @@ MIN_ROI_SHAPE = 32
 
 DAQ_PIEZO_LEVELS_DTYPE = np.float32
 DAQ_PIEZO_CHANNELS = [0, 4, 2] # OPD, DA-1, DA-2
-DAQ_CHANGE_SPEED = 5 # level change per second
+DAQ_CHANGE_SPEED = 10 # level change per second
 DAQ_LOOP_TIME = 0.01
 DAQ_MAX_LEVEL_CHANGE = DAQ_CHANGE_SPEED * DAQ_LOOP_TIME
 DAQ_PIEZO_OPD_PER_LEVEL = 2500 # nm/level (roughly)
 
-OPD_LOOP_TIME = 0.01  # 10 Hz loop
+OPD_LOOP_TIME = 0.01  # 100 Hz loop
 PIEZO_V_MIN = 0.0
 PIEZO_V_MAX = 10.0
 OPD_TOLERANCE = 5.0  # nm
 PIEZO_MAX_OPD_DIFF = 5000 # nm
-PIEZO_DA_LOOP_MAX_V_DIFF = 0.05 # max V diff when looping to avoid lost
-PIEZO_DA_LOOP_UPDATE_TIME = 10.0 # s, time to update new DA base values
 
 SERVO_BUFFER_SIZE = 20 # for servo values buffering: servo updates are based on mean of this buffer
 SERVO_NORMALIZE_REC_TIME = 1.0 # s, time to record values for normalization coeffs computation
@@ -45,7 +43,7 @@ SERVO_DEFAULT_NICENESS = 0
 SERVO_MAX_NICENESS = -20
 SERVO_LOW_NICENESS = 10
 SERVO_OPD_TIMEOUT = 5.0 # s
-
+SERVO_NONCRITIC_REFRESH_TIME = 1 # s, time to refresh servo config (PID coeffs, etc.)
 
 VIEWER_ELLIPSE_DRAW_BUFFER_SIZE = 100
 
@@ -53,14 +51,15 @@ DEFAULT_PROFILE_LEN = MIN_ROI_SHAPE
 DEFAULT_PROFILE_WIDTH = 4
 DEFAULT_PROFILE_POSITION = np.array((DEFAULT_PROFILE_LEN//2, DEFAULT_PROFILE_LEN//2), dtype=int)
 
-DEFAULT_PID_OPD = [1e-4, 5e-4, 1.0]
-DEFAULT_PID_DA = [-1e-1, 1e-4, 1.0]
-DEFAULT_PID_NEXLINE = [0.1, 0., 0.]
-
 SERIAL_PORT = "/dev/serial/by-id/usb-Prolific_Technology_Inc._USB-Serial_Controller-if00-port0"
 SERIAL_BAUDRATE = 9600 # bps
 SERIAL_STATUS_RATE = 100 # Hz
 SERIAL_STATUS_FRAME_SIZE = 9 # number of bytes in the status frame (header 3 + payload 5 + checksum 1)
+
+
+TRACKER_BUFFER_SIZE = 10000
+TRACKER_FREQUENCY = 100 # Hz
+TRACKER_STATS_FREQUENCIES = [1, 3, 10, 30, 100] # Hz
 
 SERVO_EVENTS = (
     'normalize',
@@ -73,6 +72,7 @@ SERVO_EVENTS = (
     'full_frame_mode',
     'reset_zpd',
     'walk_to_opd',
+    'calibrate_velocity',
 )
 
 NEXLINE_EVENTS = (

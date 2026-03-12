@@ -72,7 +72,7 @@ class PID:
         d = -cfg.kd * self._d_meas_f  # negative because derivative on measurement
 
         # Unsaturated output
-        u_unsat = control + p #+ i_candidate + d
+        u_unsat = control + p + i_candidate + d
 
         # Apply output limits
         u = max(cfg.out_min, min(cfg.out_max, u_unsat))

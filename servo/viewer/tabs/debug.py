@@ -25,10 +25,11 @@ class DebugTab:
         self._lbl_servo = tk.StringVar(value='Servo: —')
         self._lbl_nx    = tk.StringVar(value='Nexline: —')
         self._lbl_ir    = tk.StringVar(value='IRCamera: —')
+        self._lbl_track = tk.StringVar(value='Tracker: —')
         self._lbl_daq   = tk.StringVar(value='DAQ: —')
         self._lbl_sc    = tk.StringVar(value='SerialComm: —')
 
-        for col, v in enumerate((self._lbl_servo, self._lbl_nx, self._lbl_ir, self._lbl_daq, self._lbl_sc)):
+        for col, v in enumerate((self._lbl_servo, self._lbl_nx, self._lbl_ir, self._lbl_track, self._lbl_daq, self._lbl_sc)):
             ttk.Label(grid, textvariable=v).grid(row=0, column=col, sticky='w', padx=(0, 14))
 
         # --- Inspector (keys) ---
@@ -160,6 +161,7 @@ class DebugTab:
         self._lbl_servo.set(f"Servo: {_name(ServoState, 'Servo.state')}")
         self._lbl_nx.set(f"Nexline: {_name(NexlineState, 'Nexline.state')}")
         self._lbl_ir.set(f"IRCamera: {_name(WorkerState, 'IRCamera.state')}")
+        self._lbl_track.set(f"Tracker: {_name(WorkerState, 'Tracker.state')}")
         self._lbl_daq.set(f"DAQ: {_name(WorkerState, 'DAQ.state')}")
         self._lbl_sc.set(f"SerialComm: {_name(WorkerState, 'SerialComm.state')}")
 

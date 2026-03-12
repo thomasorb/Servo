@@ -17,6 +17,7 @@ from . import utils
 from . import pid
 from . import nexline
 from . import com
+from . import tracker
 
 from .fsm import StateMachine, Transition, ServoState, ServoEvent, NexlineState
 
@@ -110,6 +111,8 @@ class Servo(StateMachine):
                 ServoState.TRACKING, action=self._reset_zpd),
             (ServoState.TRACKING, ServoEvent.WALK_TO_OPD): Transition(
                 ServoState.TRACKING, action=self._walk_to_opd),
+            (ServoState.RUNNING, ServoEvent.CALIBRATE_VELOCITY): Transition(
+                ServoState.RUNNING, action=self._calibrate_velocity),
             
             
         }
@@ -182,7 +185,7 @@ class Servo(StateMachine):
         
         pid_control = pid.PiezoPID(
             self.data,
-            f'Servo.PID_{name}',
+            f'params.PID_{name}',
             dt=dt,
             out_min=out_min,
             out_max=out_max,
@@ -212,44 +215,34 @@ class Servo(StateMachine):
         da2_buffer = list()
         
         pid_opd_control = self.get_pid_control('OPD')
+        max_v_diff = self.data['params.PIEZO_DA_LOOP_MAX_V_DIFF'][0]
         pid_da1_control = self.get_pid_control(
             'DA',
-            out_min=da1_level_orig - config.PIEZO_DA_LOOP_MAX_V_DIFF,
-            out_max=da1_level_orig + config.PIEZO_DA_LOOP_MAX_V_DIFF)
+            out_min=da1_level_orig - max_v_diff,
+            out_max=da1_level_orig + max_v_diff)
         pid_da2_control = self.get_pid_control(
             'DA',
-            out_min=da2_level_orig - config.PIEZO_DA_LOOP_MAX_V_DIFF,
-            out_max=da2_level_orig + config.PIEZO_DA_LOOP_MAX_V_DIFF)
-        
+            out_min=da2_level_orig - max_v_diff,
+            out_max=da2_level_orig + max_v_diff)
+
+        refresh_startt = time.perf_counter()
         while True:
             try:
+                loop_startt = time.perf_counter()
                 da1_buffer.append(self.data['DAQ.piezos_level'][1])
                 da2_buffer.append(self.data['DAQ.piezos_level'][2])
-                if time.time() - last_update_time > config.PIEZO_DA_LOOP_UPDATE_TIME:
+                if time.time() - last_update_time > self.data['params.PIEZO_DA_LOOP_UPDATE_TIME'][0]:
                     da1_level_orig = np.median(da1_buffer)
                     da2_level_orig = np.median(da2_buffer)
                     da1_buffer.clear()
                     da2_buffer.clear()
                     last_update_time = time.time()
-                
-        
-                opd = np.median(self.data['IRCamera.mean_opd_buffer'][:config.SERVO_BUFFER_SIZE])
+                        
+                opd = self.data['Tracker.opd_100'][0]
+                tip = self.data['Tracker.tip_30'][0]
+                tilt = self.data['Tracker.tilt_30'][0]
 
-                tip = np.median(self.data['IRCamera.tip_buffer'][:config.SERVO_BUFFER_SIZE])
-
-                tilt = np.median(self.data['IRCamera.tilt_buffer'][:config.SERVO_BUFFER_SIZE])
-                
                 if not np.isnan(opd):
-
-                    pid_opd_control.update_coeffs()
-
-                    pid_da1_control.update_config(
-                        out_min=da1_level_orig - config.PIEZO_DA_LOOP_MAX_V_DIFF,
-                        out_max=da1_level_orig + config.PIEZO_DA_LOOP_MAX_V_DIFF)
-                    
-                    pid_da2_control.update_config(
-                        out_min=da2_level_orig - config.PIEZO_DA_LOOP_MAX_V_DIFF,
-                        out_max=da2_level_orig + config.PIEZO_DA_LOOP_MAX_V_DIFF)
 
                     self.data['DAQ.piezos_level'][0] = pid_opd_control.update(
                         control=self.data['DAQ.piezos_level'][0],
@@ -265,26 +258,50 @@ class Servo(StateMachine):
                         control=self.data['DAQ.piezos_level'][2],
                         setpoint=tilt_target,
                         measurement=tilt)
-
                     
                 else:
+                    log.error('bad opd value, lost tracking')
                     self.events['Servo.open_loop'].set()
                     break
 
-                self.poll()
-                if self.events['Servo.stop'].is_set():
-                    return
-                if self.events['Servo.open_loop'].is_set():
-                    return
-                if self.data['Servo.is_lost'][0] == float(True):
-                    return
 
-                time.sleep(config.OPD_LOOP_TIME)
+                # non-critic processing
+                if time.perf_counter() - refresh_startt > config.SERVO_NONCRITIC_REFRESH_TIME:
+                    pid_opd_control.update_coeffs()
+
+                    max_v_diff = self.data['params.PIEZO_DA_LOOP_MAX_V_DIFF'][0]
+                    pid_da1_control.update_config(
+                        out_min=da1_level_orig - max_v_diff,
+                        out_max=da1_level_orig + max_v_diff)
+                    
+                    pid_da2_control.update_config(
+                        out_min=da2_level_orig - max_v_diff,
+                        out_max=da2_level_orig + max_v_diff)
+                    
+                    self.poll()
+                    if self.events['Servo.stop'].is_set():
+                        return
+                    if self.events['Servo.open_loop'].is_set():
+                        return
+                    if self.data['Servo.is_lost'][0] == float(True):
+                        return
+                    
+                    refresh_startt = time.perf_counter()
+
+
+                process_time = time.perf_counter() - loop_startt
+                if process_time < config.OPD_LOOP_TIME:
+                    time.sleep(config.OPD_LOOP_TIME - process_time)
+                    
+                self.data['Servo.track_loop_time'][0] = time.perf_counter() - loop_startt
                 
             except KeyboardInterrupt:
                 log.error('Keyboard interrupt')
                 self.events['Servo.stop'].set()
                 return
+
+            except Exception as e:
+                log.error(f"Exception on tracking: {type(e).__name__}: {e}")
 
     def on_exit_tracking(self, _):
         log.info("<< TRACKING")
@@ -325,6 +342,9 @@ class Servo(StateMachine):
         # start piezos
         self.start_worker(piezo.DAQ, None)
 
+        # start tracker
+        self.start_worker(tracker.Tracker, None)
+        
         # start com
         self.start_worker(
             com.SerialComm, 10,
@@ -456,7 +476,7 @@ class Servo(StateMachine):
         log.info("ZPD Reset")
         self.data['IRCamera.angles'][:4] = np.zeros(4, dtype=config.FRAME_DTYPE)
         self.data['IRCamera.last_angles'][:4] = np.zeros(4, dtype=config.FRAME_DTYPE)
-        self.data['IRCamera.mean_opd_offset'][0] = float(0)#-self.data['IRCamera.mean_opd'][0]
+        self.data['IRCamera.mean_opd_offset'][0] = float(0)
         
 
     def _center_piezos(self):
@@ -487,7 +507,7 @@ class Servo(StateMachine):
         log.info("Walking to OPD")
 
         final_opd_target = float(self.data['Servo.opd_target'][0]) # nm
-        opd_start = np.median(self.data['IRCamera.mean_opd_buffer'][:config.SERVO_BUFFER_SIZE])
+        opd_start = float(self.data['Tracker.opd_1'][0]) # nm
         
         direction = float(np.sign(final_opd_target - opd_start))
         velocity_target = direction * abs(float(self.data['Servo.velocity_target'][0])) # um/s
@@ -523,37 +543,40 @@ class Servo(StateMachine):
         # check if piezos are in a correct range
         if not (4 < self.data['DAQ.piezos_level'][0] < 6):
             log.error('piezo off range, start with OPD piezo near the central position')
-            self.data['Servo.opd_target'][0] = np.median(self.data['IRCamera.mean_opd_buffer'][:config.SERVO_BUFFER_SIZE])
+            self.data['Servo.opd_target'][0] = float(self.data['Tracker.opd_1'][0]) # nm
             return
 
         move_startt = time.perf_counter()
         
         # define moving velocity for fast stepping to keep piezo near mid range
-        self.data['Nexline.moving_velocity'][0] = abs(velocity_target) * 3. #config.NEXLINE_MOVING_VELOCITY
+        self.data['Nexline.moving_velocity'][0] = abs(velocity_target) * 1.25 #config.NEXLINE_MOVING_VELOCITY
 
         step_startt = time.perf_counter()
-        while True: 
+        refresh_startt = time.perf_counter()
+        last_opd = None
+        while True:
             try:
-                opd = np.median(self.data['IRCamera.mean_opd_buffer'][:config.SERVO_BUFFER_SIZE])
-
-                tip = np.median(self.data['IRCamera.tip_buffer'][:config.SERVO_BUFFER_SIZE])
-
-                tilt = np.median(self.data['IRCamera.tilt_buffer'][:config.SERVO_BUFFER_SIZE])
+                loop_startt = time.perf_counter()
+                
+                opd = float(self.data['Tracker.opd_10'][0]) # nm
+                tip = float(self.data['Tracker.tip_10'][0]) 
+                tilt = float(self.data['Tracker.tilt_10'][0])
 
                 if np.abs(opd - final_opd_target) < config.OPD_TOLERANCE:
                     log.info(f"OPD target reached: {opd} nm")
                     self.data['Servo.opd_target'][0] = float(final_opd_target)
                     break
 
-                if time.perf_counter() - step_startt > 0.1:
+                piezo_diff = self.data['DAQ.piezos_level'][0] - 5
+                if (time.perf_counter() - step_startt > 5) or (abs(piezo_diff) > 3):
                     # wait for event dispatch and let piezo compensate during this time
                     if NexlineState(self.data['Nexline.state']).name != 'MOVING':
                         # update nexline position to keep piezo near mid-range
-                        piezo_diff = self.data['DAQ.piezos_level'][0] - 5
-                        if abs(piezo_diff) > 2:
+                        
+                        if abs(piezo_diff) > 0.5:
                             micro_step_opd_target = float(self.data['IRCamera.mean_opd'][0]) + piezo_diff * config.DAQ_PIEZO_OPD_PER_LEVEL * 1
             
-                            # set next opd target and velocity
+                            # set next opd target 
                             self.data['Servo.opd_target'][0] = micro_step_opd_target
                             
                             # move
@@ -563,22 +586,14 @@ class Servo(StateMachine):
                 # control tip tilt and adjust projected position while moving
                 projected_opd = opd_start + (time.perf_counter() - move_startt) * velocity_target * 1000
 
-                if time.time() - last_update_time > config.PIEZO_DA_LOOP_UPDATE_TIME:
+                da1_buffer.append(self.data['DAQ.piezos_level'][1])
+                da2_buffer.append(self.data['DAQ.piezos_level'][2])
+                if time.time() - last_update_time > self.data['params.PIEZO_DA_LOOP_UPDATE_TIME'][0]:
                     da1_level_orig = np.median(da1_buffer)
                     da2_level_orig = np.median(da2_buffer)
                     da1_buffer.clear()
                     da2_buffer.clear()
-                    last_update_time = time.time()
-
-                pid_opd_control.update_coeffs()
-
-                pid_da1_control.update_config(
-                    out_min=da1_level_orig - config.PIEZO_DA_LOOP_MAX_V_DIFF,
-                    out_max=da1_level_orig + config.PIEZO_DA_LOOP_MAX_V_DIFF)
-
-                pid_da2_control.update_config(
-                    out_min=da2_level_orig - config.PIEZO_DA_LOOP_MAX_V_DIFF,
-                    out_max=da2_level_orig + config.PIEZO_DA_LOOP_MAX_V_DIFF)
+                    last_update_time = time.perf_counter()
 
                 self.data['DAQ.piezos_level'][0] = pid_opd_control.update(
                     control=self.data['DAQ.piezos_level'][0],
@@ -595,22 +610,101 @@ class Servo(StateMachine):
                 #     setpoint=tilt_target,
                 #     measurement=tilt)
 
-                self.poll()
-                if self.events['Servo.stop'].is_set():
-                    return
-                if self.events['Servo.open_loop'].is_set():
-                    return
-                if self.data['Servo.is_lost'][0] == float(True):
-                    return
+                if time.perf_counter() - refresh_startt > config.SERVO_NONCRITIC_REFRESH_TIME:
+                                        
+                    pid_opd_control.update_coeffs()
 
-                time.sleep(config.OPD_LOOP_TIME)
+                    pid_da1_control.update_config(
+                        out_min=da1_level_orig - config.PIEZO_DA_LOOP_MAX_V_DIFF,
+                        out_max=da1_level_orig + config.PIEZO_DA_LOOP_MAX_V_DIFF)
 
+                    pid_da2_control.update_config(
+                        out_min=da2_level_orig - config.PIEZO_DA_LOOP_MAX_V_DIFF,
+                        out_max=da2_level_orig + config.PIEZO_DA_LOOP_MAX_V_DIFF)
+                    
+                    refresh_startt = time.perf_counter()
+
+                    self.poll()
+                    if self.events['Servo.stop'].is_set():
+                        return
+                    if self.events['Servo.open_loop'].is_set():
+                        return
+                    if self.data['Servo.is_lost'][0] == float(True):
+                        return
+
+                process_time = time.perf_counter() - loop_startt
+                if process_time < config.OPD_LOOP_TIME:
+                    time.sleep(config.OPD_LOOP_TIME - process_time)
+
+                loop_time = time.perf_counter() - loop_startt
+                self.data['Servo.walk_loop_time'][0] = loop_time
+                if last_opd is not None:
+                    self.data['Servo.walk_velocity'][0] = (float(opd) - last_opd) / (loop_time) * 1000 # um/s
+                last_opd = float(opd)
+                
             except KeyboardInterrupt:
                 log.error('Keyboard interrupt')
                 self.events['Servo.stop'].set()
                 return
+
+            except Exception as e:
+                log.error('Exception at walk_to_opd:\n' + traceback.format_exc())
+                self.events['Servo.stop'].set()
+                return
                             
 
+    def _calibrate_velocity(self, _):
+        log.info("Calibrating velocity")
+
+        # set nexline velocity at default moving velocity
+        #self.data['Nexline.moving_velocity'][0] = config.NEXLINE_MOVING_VELOCITY
+
+        # moving with Nexline for a few seconds and measure resulting OPD velocity to calibrate the conversion factor
+        opd_start = self.data['Tracker.opd_1'][0]
+
+        opd_end = opd_start + float(self.data['params.NEXLINE_CALIB_OPD'][0])
+
+        direction = np.sign(opd_end - opd_start)
+        step = direction * self.data['params.NEXLINE_OPD_UPDATE'][0]
+        targets = np.arange(opd_start, opd_end, step)
+        targets = list(targets[1:]) + [opd_end]
+
+        calibration_buffer = list()
+        move_startt = time.perf_counter()
+        for i, itarget in enumerate(targets):
+            
+            self.data['Servo.opd_target'][0] = float(itarget)
+            self.data['Nexline.moving_velocity'][0] = abs(float(self.data['Servo.velocity_target'][0])) # um/s
+
+            self.events['Nexline.move'].set()
+        
+            step_startt = time.perf_counter()
+
+            while True: # wait for nexline move to finish
+                loop_startt = time.perf_counter()
+
+                nexline_is_moving = NexlineState(self.data['Nexline.state']).name == 'MOVING'
+                if time.perf_counter() - step_startt > 0.5: # wait for event dispatch
+                    if not nexline_is_moving:
+                        break
+                calibration_buffer.append([
+                    time.perf_counter() - move_startt,
+                    self.data['Tracker.opd_100'][0],
+                    nexline_is_moving,
+                    i])
+
+                time.sleep(max(0, config.IRCAM_SERVO_OUTPUT_TIME - (time.perf_counter() - loop_startt)))
+
+        np.save('velocity_calib_calibration_buffer.npy', np.array(calibration_buffer))
+            
+        
+        #measured_velocity = (opd_end - opd_start) / 10 * 1000 # um/s
+        #conversion_factor = measured_velocity / config.NEXLINE_MOVING_VELOCITY
+        
+        #log.info(f"Measured velocity: {measured_velocity} um/s, conversion factor: {conversion_factor}")
+        
+        #self.data['Servo.velocity_conversion_factor'][0] = conversion_factor
+        
     def _move_to_opd(self, _):
         log.info("Moving to OPD")
 
@@ -652,7 +746,7 @@ class Servo(StateMachine):
 
             pid_opd_control = self.get_pid_control('OPD')
             
-            opd = np.mean(self.data['IRCamera.mean_opd_buffer'][:config.SERVO_BUFFER_SIZE])
+            opd = self.data['Tracker.opd_10'][0]
             if not np.isnan(opd):
             
                 self.data['DAQ.piezos_level'][0] = pid_opd_control.update(

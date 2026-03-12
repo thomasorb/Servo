@@ -34,6 +34,7 @@ class ServoEvent(IntEnum):
     FULL_FRAME_MODE = auto()
     RESET_ZPD = auto()
     WALK_TO_OPD = auto()
+    CALIBRATE_VELOCITY = auto()
 
 class ServoState(IntEnum):
     IDLE = auto()
