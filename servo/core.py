@@ -146,6 +146,10 @@ class SharedData(object):
         self.add_value('Nexline.state', float(0), stored=False)
         self.add_value('Nexline.moving_velocity', float(config.NEXLINE_MOVING_VELOCITY), stored=False)
         
+        self.add_value('Nexline.positive_velocity_calibration_factor',
+                       float(config.NEXLINE_POS_CALIB_FACTOR), stored=True)
+        self.add_value('Nexline.negative_velocity_calibration_factor',
+                       float(config.NEXLINE_NEG_CALIB_FACTOR), stored=True)
 
         
         self.add_value('SerialComm.state', float(0), stored=False)
@@ -211,6 +215,18 @@ class SharedData(object):
 
     def keys(self):
         return self.arrs.keys()
+
+    def get_velocity_calibration_factor(self, direction):
+        if direction > 0:
+            calibration_factor = abs(self['Nexline.positive_velocity_calibration_factor'][0])
+        else:
+            calibration_factor = abs(self['Nexline.negative_velocity_calibration_factor'][0])
+            
+        if (calibration_factor == 0) or (np.isnan(calibration_factor)):
+            log.warning('bad calibration factor, using 1 instead')
+            calibration_factor = 1
+            
+        return calibration_factor
 
     def stop(self):
         # Save states (unchanged)

@@ -1,6 +1,8 @@
 PID_OPD = [2e-6, 0., 0.]
 PID_DA = [-0.003, -0.0001, 0.]
 PID_NEXLINE = [0.1, 0., 0.]
+PID_VEL_OPD = [2e-6, 0., 0.]
+
 NEXLINE_CALIB_OPD = 5000 # nm, opd diplacement to reach for nexline velocity calibration
 NEXLINE_OPD_UPDATE = 10000 # nm, opd displacement to update nexline velocity
 

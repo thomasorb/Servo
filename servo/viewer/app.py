@@ -12,7 +12,7 @@ from .tabs.buffers import BuffersTab
 from .utils.lut import build_lut
 from .widgets.casebar import CaseBar  # convenience
 from .. import core, config, utils
-from ..fsm import ServoState, NexlineState, WorkerState
+from ..fsm import ServoState
 
 
 log = logging.getLogger(__name__)
@@ -643,6 +643,35 @@ class Viewer(core.Worker):
         if self.stop_event and self.stop_event.is_set():
             self.stop()
             return
+
+        if self.events['Servo.velocity_calibration_completed'].is_set():
+            # show a non-blocking graph of the results in a window via matplotlib
+            import matplotlib.pyplot as plt
+            def _show_calibration_results(direction):
+                try:
+                    if direction > 0:
+                        calibration_buffer = np.load('velocity_calibration_buffer_positive.npy')
+                        p0 = self.data['Nexline.positive_velocity_calibration_factor'][0]
+                    else:
+                        calibration_buffer = np.load('velocity_calibration_buffer_negative.npy')
+                        p0 = self.data['Nexline.negative_velocity_calibration_factor'][0]
+
+                    t, opd, _, _, opd_fit = np.array(calibration_buffer).T
+                    plt.figure()
+                    plt.plot(t, opd, c='0.')
+                    plt.plot(t, opd_fit, c='tab:red')
+                    plt.title('Velocity Calibration Results')
+                    plt.xlabel('t (s)')
+                    plt.ylabel('OPD (nm)')
+                    plt.grid(True)
+                    plt.show(block=False)
+                except Exception as e:
+                    log.error(f"Error showing velocity calibration results: {e}")
+                finally:
+                    self.events['Servo.velocity_calibration_completed'].clear()
+
+            _show_calibration_results(1)
+            _show_calibration_results(-1)
         # frame
         try:
             prev_w, prev_h = getattr(self.main_tab, 'img_w', None), getattr(self.main_tab, 'img_h', None)

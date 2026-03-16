@@ -59,6 +59,13 @@ class Nexline(core.Worker, StateMachine):
             log.info(f'Nexline ID: {self.pidevice.qIDN()}')
             log.info(f'Nexline Operating mode: {self.pidevice.qSVO(config.NEXLINE_CHANNEL)[config.NEXLINE_CHANNEL]}')
             self.print_pos()
+            self.set_driving_mode(NexModes.NANO_STEP)
+            self.set_velocity(config.NEXLINE_MOVING_VELOCITY)
+            log.info('init stepping')
+            self.step(1)
+            self.step(-1)
+            log.info('Nexline initialized')
+            
         except Exception as e:
             log.error(f'error during init: {e}')
             self.dispatch(NexlineEvent.STOP)
@@ -66,6 +73,7 @@ class Nexline(core.Worker, StateMachine):
     # Hooks (facultatif)
     def on_enter_running(self, _):
         log.info(">> RUNNING")
+            
         # running loop
         # while True:
         #     try:
@@ -151,14 +159,20 @@ class Nexline(core.Worker, StateMachine):
     def print_velocity(self):
         log.info(f'actual optical velocity: {self.get_velocity()} um/s')
     
-    def set_velocity(self, velocity=250):
+    def set_velocity(self, velocity):
         """
         set optical velocity in um/s
         """
+        calibration_factor = self.data.get_velocity_calibration_factor(np.sign(velocity))
+
+        velocity = abs(velocity) * calibration_factor
+        
+        log.info(f'setting velocity to {velocity} um/s (calibration factor: {calibration_factor})')
         try:
             self.print_velocity()
             self.pidevice.CCL(1, 'advanced') # switch to high command level
-            self.pidevice.SPA(config.NEXLINE_CHANNEL, 0x07000204, float(self.to_mpd(velocity)))
+            self.pidevice.SPA(config.NEXLINE_CHANNEL, 0x07000204, float(self.to_mpd(
+                abs(velocity))))
             self.pidevice.CCL(0) # switch to low command level
             self.print_velocity()
             
@@ -179,14 +193,39 @@ class Nexline(core.Worker, StateMachine):
 
     def _move(self, _):
         pass
+
+    def step(self, step_nb):
+        self.pidevice.OSM(config.NEXLINE_CHANNEL, step_nb)
+
+        startt = time.time()
+        while True:
+            if not self.pidevice.qOSN(config.NEXLINE_CHANNEL)[1]:
+                break
+
+            self.poll()
+
+            if self.events['Servo.stop'].is_set():
+                try:
+                    self.pidevice.HLT(config.NEXLINE_CHANNEL)
+                    pipython.pitools.stopall(self.pidevice)
+                except Exception as e:
+                    log.error(f'Exception at Nexline halt: {e}')
+                log.error('Nexline halted')
+                break
+
+            if (time.time() - startt) > config.NEXLINE_TIMEOUT:
+                log.error('Nexline move timeout')
+                break
+
+            time.sleep(0.01)
     
     def on_enter_moving(self, _):
                       
         #log.info('Moving Nexline')
-        self.set_velocity(self.data['Nexline.moving_velocity'][0])
+        opd = self.data['Servo.opd_target'][0] - self.data['Tracker.opd_3'][0]
 
-        opd = self.data['Servo.opd_target'][0] - self.data['IRCamera.mean_opd'][0]
-        
+        self.set_velocity(self.data['Nexline.moving_velocity'][0] * np.sign(opd))
+
         if not np.isnan(opd):        
             velocity = self.get_velocity() # um/s
 
@@ -196,30 +235,7 @@ class Nexline(core.Worker, StateMachine):
 
             #log.info(f'{self.pidevice.qSSA(config.NEXLINE_CHANNEL)}')
             #
-            self.pidevice.OSM(config.NEXLINE_CHANNEL, step_nb)
-
-            startt = time.time()
-            while True:
-                if not self.pidevice.qOSN(config.NEXLINE_CHANNEL)[1]:
-                    break
-
-                self.poll()
-
-                if self.events['Servo.stop'].is_set():
-                    try:
-                        self.pidevice.HLT(config.NEXLINE_CHANNEL)
-                        pipython.pitools.stopall(self.pidevice)
-                    except Exception as e:
-                        log.error(f'Exception at Nexline halt: {e}')
-                    log.error('Nexline halted')
-                    break
-                
-                if (time.time() - startt) > config.NEXLINE_TIMEOUT:
-                    log.error('Nexline move timeout')
-                    break
-
-                time.sleep(0.01)
-                            
+            self.step(step_nb)
             
             
         else:
