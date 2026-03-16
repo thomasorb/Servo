@@ -585,7 +585,7 @@ class Servo(StateMachine):
                         break
 
 
-                    velocity = float(self.data['Tracker.velocity_10'][0]) / 1000. # um/s
+                    velocity = float(self.data['Tracker.velocity_30'][0]) / 1000. # um/s
 
                     self.data['DAQ.piezos_level'][0] = pid_opd_control.update(
                         control=self.data['DAQ.piezos_level'][0],
