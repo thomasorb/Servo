@@ -134,6 +134,7 @@ class Servo(StateMachine):
 
         self.data = core.SharedData()
 
+        self.fir_short_mimo = None
 
     def install_signal_handlers(self):
         """
@@ -182,9 +183,9 @@ class Servo(StateMachine):
     def get_pid_control(self, name,
                         out_min=config.PIEZO_V_MIN,
                         out_max=config.PIEZO_V_MAX):
-
-        dt = config.OPD_LOOP_TIME
         
+        dt = config.OPD_LOOP_TIME
+
         pid_control = pid.PiezoPID(
             self.data,
             f'params.PID_{name}',
@@ -192,7 +193,7 @@ class Servo(StateMachine):
             out_min=out_min,
             out_max=out_max,
             deriv_filter_hz=1/dt/1000., kaw=5.0, deadband=0.0
-            )
+        )
         
         return pid_control
 
@@ -202,8 +203,8 @@ class Servo(StateMachine):
         self.data['Servo.is_lost'][0] = float(False)
         
         opd_target = self.data['Servo.opd_target'][0]
-        tip_target = self.data['Servo.tip_target'][0]
-        tilt_target = self.data['Servo.tilt_target'][0]
+        tip_target = self.data['Servo.tip_target'][0] # associated with DA1
+        tilt_target = self.data['Servo.tilt_target'][0] # associated with DA2
         
         log.info(f"   OPD target: {opd_target} nm")
         log.info(f"   TIP target: {tip_target} radians")
@@ -216,14 +217,15 @@ class Servo(StateMachine):
         da1_buffer = list()
         da2_buffer = list()
         
-        pid_opd_control = self.get_pid_control('OPD')
+        pid_opd_control = self.get_pid_control('TRACK_OPD')
+        
         max_v_diff = self.data['params.PIEZO_DA_LOOP_MAX_V_DIFF'][0]
         pid_da1_control = self.get_pid_control(
-            'DA',
+            'TRACK_DA1',
             out_min=da1_level_orig - max_v_diff,
             out_max=da1_level_orig + max_v_diff)
         pid_da2_control = self.get_pid_control(
-            'DA',
+            'TRACK_DA2',
             out_min=da2_level_orig - max_v_diff,
             out_max=da2_level_orig + max_v_diff)
 
@@ -305,6 +307,13 @@ class Servo(StateMachine):
             except Exception as e:
                 log.error(f"Exception on tracking: {type(e).__name__}: {e}")
 
+        if isinstance(pid_opd_control, pid.NeuralRegulator):
+            pid_opd_control.save()
+        if isinstance(pid_da1_control, pid.NeuralRegulator):
+            pid_da1_control.save()
+        if isinstance(pid_da2_control, pid.NeuralRegulator):
+            pid_da2_control.save()
+
     def on_exit_tracking(self, _):
         log.info("<< TRACKING")
 
@@ -333,11 +342,8 @@ class Servo(StateMachine):
 
         # start ir camera
         if not self.nocam:
-            # Real-time RT priority 75, pinned to CPU 2
-            self.start_worker(
-                ircam.IRCamera,
-                priority={"niceness": config.SERVO_MAX_NICENESS, "cpus": [2]},
-            )
+            self._start_worker_roi_mode()
+            
         # start nexline
         self.start_worker(nexline.Nexline, None)
         
@@ -528,20 +534,19 @@ class Servo(StateMachine):
         # da1_buffer = list()
         # da2_buffer = list()
         
-        # if not self._center_piezos():
-        #    log.error("Failed to center piezos, cannot walk to OPD")
-        #    return
-
-        dt = config.OPD_LOOP_TIME
-        pid_opd_control = pid.PiezoPID(
-            self.data,
-            'params.PID_VEL_OPD',
-            dt=dt,
-            out_min=config.PIEZO_V_MIN,
-            out_max=config.PIEZO_V_MAX,
+        if not self._center_piezos():
+           log.error("Failed to center piezos, cannot walk to OPD")
+           return
+        
+        # --- inside Servo._walk_to_opd(), where the velocity PID is created ---
+        dt = config.OPD_LOOP_TIME  # 0.01 s (100 Hz)
+        
+        vel_controller = pid.PiezoPID(
+            self.data, 'params.PID_VEL_OPD',
+            dt=dt, out_min=config.PIEZO_V_MIN, out_max=config.PIEZO_V_MAX,
             deriv_filter_hz=0., kaw=0., deadband=0.0
-            )
-
+        )
+        
         # check if piezos are in a correct range
         if not (4 < self.data['DAQ.piezos_level'][0] < 6):
             log.error('piezo off range, start with OPD piezo near the central position')
@@ -579,7 +584,9 @@ class Servo(StateMachine):
 
                     time.sleep(max(0, config.IRCAM_SERVO_OUTPUT_TIME - (time.perf_counter() - loop_startt)))
 
-                    if np.abs(opd - final_opd_target) < config.OPD_TOLERANCE:
+                    if ((np.abs(opd - final_opd_target) < config.OPD_TOLERANCE)
+                        or (direction > 0 and opd >= final_opd_target)
+                        or (direction < 0 and opd <= final_opd_target)):
                         log.info(f"OPD target reached: {opd} nm")
                         self.data['Servo.opd_target'][0] = float(final_opd_target)
                         break
@@ -587,7 +594,7 @@ class Servo(StateMachine):
 
                     velocity = float(self.data['Tracker.velocity_30'][0]) / 1000. # um/s
 
-                    self.data['DAQ.piezos_level'][0] = pid_opd_control.update(
+                    self.data['DAQ.piezos_level'][0] = vel_controller.update(
                         control=self.data['DAQ.piezos_level'][0],
                         setpoint=velocity_target,
                         measurement=velocity)
@@ -614,7 +621,7 @@ class Servo(StateMachine):
 
                     if time.perf_counter() - refresh_startt > config.SERVO_NONCRITIC_REFRESH_TIME:
 
-                        pid_opd_control.update_coeffs()
+                        vel_controller.update_coeffs()
 
                         # pid_da1_control.update_config(
                         #     out_min=da1_level_orig - config.PIEZO_DA_LOOP_MAX_V_DIFF,
@@ -805,8 +812,10 @@ class Servo(StateMachine):
             return
 
         log.info("Switching to ROI mode")
+        self._start_worker_roi_mode()
         self.events['IRCamera.stop'].set()
 
+    def _start_worker_roi_mode(self):
         w = self.data['IRCamera.profile_len'][0]
         x = self.data['IRCamera.profile_x'][0]
         y = self.data['IRCamera.profile_y'][0]
@@ -825,9 +834,9 @@ class Servo(StateMachine):
         log.info("Switching to full frame mode")
         self.events['IRCamera.stop'].set()
 
-        self.start_worker(ircam.IRCamera, -20)
-        
-        
+        self.start_worker(ircam.IRCamera, -20, roi_mode=False)
+                
+    
     def _stop(self, _):
         log.info("Stopping Servo")
 

@@ -150,7 +150,7 @@ class SharedData(object):
                        float(config.NEXLINE_POS_CALIB_FACTOR), stored=True)
         self.add_value('Nexline.negative_velocity_calibration_factor',
                        float(config.NEXLINE_NEG_CALIB_FACTOR), stored=True)
-
+        self.add_value('Nexline.position', float(np.nan), stored=True)
         
         self.add_value('SerialComm.state', float(0), stored=False)
         self.add_value('Viewer.state', float(0), stored=False)
@@ -166,7 +166,15 @@ class SharedData(object):
             self.add_value(f'Tracker.tilt_{ifreq}', float(np.nan), stored=False)
             self.add_value(f'Tracker.opd_std_{ifreq}', float(np.nan), stored=False)
             self.add_value(f'Tracker.velocity_{ifreq}', float(np.nan), stored=False)
-        
+
+        # nn metrics
+        for iprefix in ['OPD', 'DA1', 'DA2']:
+            self.add_value(f'FIR.short.tracking.{iprefix}.u_raw', float(np.nan), stored=False)
+            self.add_value(f'FIR.short.tracking.{iprefix}.u', float(np.nan), stored=False)
+            self.add_value(f'FIR.short.tracking.{iprefix}.w_norm', float(np.nan), stored=False)
+            
+            
+            
         # record also config values
         for ikey in [k for k in dir(params) if k.isupper()]:
             _attr = getattr(params, ikey)

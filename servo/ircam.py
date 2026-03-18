@@ -22,6 +22,7 @@ class IRCamera(core.Worker):
         super().__init__(data, events)
 
         self.roi_mode = bool(roi_mode)
+        log.info(f'IRCamera roi_mode={self.roi_mode}')
 
         if frame_shape is None:
             self.frame_shape = np.array(config.FULL_FRAME_SHAPE)
@@ -378,8 +379,8 @@ class DataObserver(NITLibrary.NITUserObserver):
                 self.arr_opds[:4] = opds.astype(config.FRAME_DTYPE)
                 self.arr_mean_opd[0] = float(mean_opd)
 
-                tip  = self.angles_ws[1] - self.angles_ws[0]
-                tilt = self.angles_ws[3] - self.angles_ws[2]
+                tip = self.angles_ws[3] - self.angles_ws[2]
+                tilt  = self.angles_ws[1] - self.angles_ws[0]
                 self.arr_tip[0]  = tip
                 self.arr_tilt[0] = tilt
                 

@@ -17,6 +17,12 @@ download the [installation file](./servo.yml) then run:
 conda env create -f servo.yml
 ```
 
+#### Install PyTorch
+
+```
+conda activate servo
+pip3 install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+```
 ### Install software
 ```
 git clone https://github.com/thomasorb/Servo.git
@@ -99,7 +105,7 @@ python setup.py install
 
 ## copy defaults states
 
-copy `state.json` in `~/local/states/`
+copy `state.json` in `~/.local/states/`
 
 
 ## run servo

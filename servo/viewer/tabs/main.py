@@ -40,6 +40,33 @@ class MainTab:
         self.hlevels_buf = deque(maxlen=config.VIEWER_BUFFER_SIZE)
         self.vlevels_buf = deque(maxlen=config.VIEWER_BUFFER_SIZE)
 
+        # V row
+        v_row = ttk.Frame(parent)
+        v_row.pack(fill=tk.X, expand=False, pady=6)
+        v_left = ttk.Frame(v_row)
+        v_left.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        self.fig_v = plt.Figure(figsize=(6, 1.8), dpi=90)
+        self.ax_v = self.fig_v.add_subplot(111)
+        self.ax_v.set_title('Vertical profile')
+        self.ax_v.set_ylim(0, 1)
+        self.canvas_v = FigureCanvasTkAgg(self.fig_v, master=v_left)
+        self.canvas_v.get_tk_widget().pack(fill=tk.X, padx=8, pady=4)
+        self.vbar = CaseBar(
+            v_left,
+            count=int(self.viewer.data['IRCamera.profile_len'][0]),
+            height=28,
+            states=self.viewer.data['Servo.pixels_y'][:].astype(int).tolist(),
+            on_change=self._on_vbar_change,
+        )
+        self.vbar.pack(fill=tk.X, padx=8, pady=(0, 8))
+        v_right = ttk.Frame(v_row, width=240)
+        v_right.pack(side=tk.RIGHT, fill=tk.Y, padx=8)
+        self.fig_elly = plt.Figure(figsize=(3.0, 1.8), dpi=90)
+        self.ax_elly = self.fig_elly.add_subplot(111)
+        self.ax_elly.set_title('ellipse_y')
+        self.canvas_elly = FigureCanvasTkAgg(self.fig_elly, master=v_right)
+        self.canvas_elly.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+
         # H row
         h_row = ttk.Frame(parent)
         h_row.pack(fill=tk.X, expand=False, pady=6)
@@ -67,32 +94,6 @@ class MainTab:
         self.canvas_ellx = FigureCanvasTkAgg(self.fig_ellx, master=h_right)
         self.canvas_ellx.get_tk_widget().pack(fill=tk.BOTH, expand=True)
 
-        # V row
-        v_row = ttk.Frame(parent)
-        v_row.pack(fill=tk.X, expand=False, pady=6)
-        v_left = ttk.Frame(v_row)
-        v_left.pack(side=tk.LEFT, fill=tk.X, expand=True)
-        self.fig_v = plt.Figure(figsize=(6, 1.8), dpi=90)
-        self.ax_v = self.fig_v.add_subplot(111)
-        self.ax_v.set_title('Vertical profile')
-        self.ax_v.set_ylim(0, 1)
-        self.canvas_v = FigureCanvasTkAgg(self.fig_v, master=v_left)
-        self.canvas_v.get_tk_widget().pack(fill=tk.X, padx=8, pady=4)
-        self.vbar = CaseBar(
-            v_left,
-            count=int(self.viewer.data['IRCamera.profile_len'][0]),
-            height=28,
-            states=self.viewer.data['Servo.pixels_y'][:].astype(int).tolist(),
-            on_change=self._on_vbar_change,
-        )
-        self.vbar.pack(fill=tk.X, padx=8, pady=(0, 8))
-        v_right = ttk.Frame(v_row, width=240)
-        v_right.pack(side=tk.RIGHT, fill=tk.Y, padx=8)
-        self.fig_elly = plt.Figure(figsize=(3.0, 1.8), dpi=90)
-        self.ax_elly = self.fig_elly.add_subplot(111)
-        self.ax_elly.set_title('ellipse_y')
-        self.canvas_elly = FigureCanvasTkAgg(self.fig_elly, master=v_right)
-        self.canvas_elly.get_tk_widget().pack(fill=tk.BOTH, expand=True)
 
     def _on_hbar_change(self, index, state, all_states):
         try:

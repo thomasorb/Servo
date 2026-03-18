@@ -217,6 +217,7 @@ class Nexline(core.Worker, StateMachine):
                 log.error('Nexline move timeout')
                 break
 
+            self.data['Nexline.position'][0] = float(self.get_pos())
             time.sleep(0.01)
     
     def on_enter_moving(self, _):
