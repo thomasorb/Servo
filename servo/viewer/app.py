@@ -3,6 +3,7 @@ from pathlib import Path
 import logging
 import numpy as np
 import tkinter as tk
+import traceback
 from tkinter import ttk
 from PIL import Image, ImageTk
 from .tabs.main import MainTab
@@ -21,6 +22,7 @@ class Viewer(core.Worker):
     """Tk-based scientific viewer (refactored)."""
 
     def __init__(self, data, events):
+        log.info('Initializing Viewer...')
         super().__init__(data, events)
 
         self.config = config
@@ -169,7 +171,12 @@ class Viewer(core.Worker):
 
         # timers
         self.root.bind('<<Shutdown>>', lambda e: self._really_stop())
+
+    def on_enter_running(self, _):
+        log.info("Viewer entering running (starting Tk mainloop)")
         self.root.after(100, self.refresh)
+        self.run()  
+        
 
     # --- small LED widget helpers ---
     def _make_led(self, parent, diameter=12, on_color="#2ecc71", off_color="#c0392b"):
@@ -233,7 +240,7 @@ class Viewer(core.Worker):
                                         command=lambda: self._set_event('Servo.reset_zpd'))
         self.reset_zpd_btn.pack(side=tk.RIGHT, padx=10)
 
-        self.roi_mode_btn = ttk.Button(toolbar, text='ROI MODE', style='Purple.TButton',
+        self.roi_mode_btn = ttk.Button(toolbar, text='FULL FRAME MODE', style='Purple.TButton',
                                        command=self.toggle_roi_mode)
         self.roi_mode_btn.pack(side=tk.RIGHT, padx=10)
 
@@ -341,8 +348,6 @@ class Viewer(core.Worker):
             pass
 
     def stop(self):
-        if self.stop_event:
-            self.stop_event.set()
         try:
             self.root.event_generate('<<Shutdown>>', when='tail')
         except Exception:
@@ -469,10 +474,9 @@ class Viewer(core.Worker):
 
     def on_close(self):
         try:
-            if self.stop_event:
-                self.stop_event.set()
-        except Exception:
-            pass
+            self.dispatch(self.Event.STOP)
+        except Exception as e:
+            log.error('Error dispatching STOP event on close: \n {traceback.format_exc()}')
         try:
             self.save_window_geometry()
         except Exception:
@@ -545,7 +549,7 @@ class Viewer(core.Worker):
         
         def _nudge(var: tk.DoubleVar, scl: tk.Scale, delta_param: str, direction: float = 1.0):
             delta = self.data[f'params.PIEZO_{delta_param}'][0]
-            try: v = float(var.get()) + float(delta)
+            try: v = float(var.get()) + float(direction*delta)
             except Exception: v = 0.0
             vmin = min(float(scl['from']), float(scl['to']))
             vmax = max(float(scl['from']), float(scl['to']))
@@ -640,10 +644,8 @@ class Viewer(core.Worker):
         
     # refresh loop
     def refresh(self):
-        if self.stop_event and self.stop_event.is_set():
-            self.stop()
-            return
-
+        self.poll()
+        
         if self.events['Servo.velocity_calibration_completed'].is_set():
             # show a non-blocking graph of the results in a window via matplotlib
             import matplotlib.pyplot as plt
@@ -687,20 +689,14 @@ class Viewer(core.Worker):
         # roi
         try:
             n = int(self.data['IRCamera.profile_len'][0])
-            self.roi_shape = (n, n)
-            if self.main_tab._roi_mode:
-                new_frame = self.main_tab.frame
-            else:
-                try:
-                    raw = self.data['IRCamera.roi'][:n**2]
-                    new_frame = np.array(raw).reshape(self.roi_shape).T
-                except Exception:
-                    new_frame = np.zeros(self.roi_shape).T
+            raw = self.data['IRCamera.roi'][:n**2]
+            new_frame = np.array(raw).reshape(self.roi_shape).T
             if self.show_normalized:
                 raw_min = np.array(self.data['Servo.roinorm_min'][:n**2]).reshape(self.roi_shape).T
                 raw_max = np.array(self.data['Servo.roinorm_max'][:n**2]).reshape(self.roi_shape).T
                 new_frame = np.clip((new_frame - raw_min) / (raw_max - raw_min), 0, 1)
             self.roi_image = new_frame
+            
             # draw ROI thumbnail
             stretched = self.main_tab._stretch(self.roi_image.T)
             rgb = self.main_tab._apply_lut(stretched)
@@ -714,6 +710,7 @@ class Viewer(core.Worker):
                 self.roi_canvas.coords(self.roi_image_id, 0, 0)
         except Exception as e:
             log.error(f'roi refresh: {e}')
+            log.error(f'{traceback.format_exc()}')
         # draw
         try:
             self.main_tab.render()
@@ -754,6 +751,5 @@ class Viewer(core.Worker):
             self.actual_velocity_target.set('—')
             
         # schedule
-        if not (self.stop_event and self.stop_event.is_set()):
-            self.root.after(100, self.refresh)
+        self.root.after(100, self.refresh)
             

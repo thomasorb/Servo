@@ -1,42 +1,117 @@
 import numpy as np
 import logging
 from multiprocessing import shared_memory
+from enum import IntEnum, auto
+import traceback
+import time
 
 from . import config
 from . import params
 from . import state_store
 
-from .fsm import WorkerState
+from .fsm import WorkerState, StateMachine, Transition
 
 log = logging.getLogger(__name__)
 
 
-class Worker(object):
+class Worker(StateMachine):
 
-    def __init__(self, data, events, **kwargs):
+    def __init__(self, data, events, State=None):
         self.data = data
         self.events = events
-        self.stop_event = self.events[f"{self.__class__.__name__}.stop"]
-        self.set_state(WorkerState.IDLE)
-
-
-    def set_state(self, state):
-        self.state = state
-        self.data[f"{self.__class__.__name__}.state"][:] = self.state.value
+        self.classname = self.__class__.__name__
         
-    def run(self):
-        """Main worker loop."""
-        while not self.stop_event.is_set() and self.state != WorkerState.STOPPED:
-            self.set_state(WorkerState.RUNNING)
-            self.loop_once()
+        if State is None:
+            self.State = WorkerState
+        else:
+            self.State = State
+
+        # construct event class
+        events_dict = {event.upper(): auto() for event in getattr(config, f'{self.__class__.__name__.upper()}_EVENTS', [])}
+        events_dict['START'] = auto()
+        events_dict['STOP'] = auto()
+        
+        self.Event = IntEnum('Event', events_dict)
+
+        table = {
+            (self.State.IDLE, self.Event.START): Transition(
+                self.State.RUNNING, action=self._start),
+            (self.State.IDLE, self.Event.STOP): Transition(
+                self.State.STOPPED, action=self._stop),
+            (self.State.RUNNING, self.Event.STOP): Transition(
+                self.State.STOPPED, action=self._stop),
+        }
+    
+        super().__init__(self.State.IDLE, table)
+
+    def poll(self):    
+        evs = self.events
+        classname = self.__class__.__name__
+        events_dict = list(getattr(config, f'{classname.upper()}_EVENTS', []))
+        if 'start' not in events_dict:
+            events_dict.append('start')
+        if 'stop' not in events_dict:
+            events_dict.append('stop')
+        
+        for iname in events_dict:
+            if evs.get(f'{classname}.' + iname) and evs[f'{classname}.' + iname].is_set():
+                evs[f'{classname}.' + iname].clear()
+                self.dispatch(getattr(self.Event, iname.upper()), payload=None)
+
+    def on_enter_running(self, _):
+        log.info(f"{self.classname} enter running")
+
+        # running loop
+        while True:
+            try:
+                if hasattr(self, 'loop_once'):
+                    try:
+                        self.loop_once()
+                    except Exception as e:
+                        log.error('Exception at loop_once:\n' + traceback.format_exc())
+                        self.dispatch(self.Event.STOP)
+
+                self.poll()
+
+                if self.state is self.State.STOPPED:
+                    break
+                
+                time.sleep(1e-2)
+            except KeyboardInterrupt:
+                log.error('Keyboard interrupt')
+                self.dispatch(self.Event.STOP)
+            except Exception as e:
+                log.error('Exception at running:\n' + traceback.format_exc())
+                self.dispatch(self.Event.STOP)
+                
+                
+    def on_exit_running(self, _):
+        log.info(f"{self.classname} exit running")
         
     def cleanup(self):
         """Optional: close hardware / files / buffers."""
         pass
 
+    def _start(self, _):
+        log.info(f'Starting {self.classname}')
+        
+    def _stop(self, _):
+        self.stop()
+
+    def _publish_state(self, state=None):
+        if state is None:
+            state = self.state
+        
+        super()._publish_state(state=state)
+        
+        try:
+            self.data[f'{self.classname}.state'][0] = float(state.value)
+        except Exception as e:
+            log.warning(f'could not publish state for {self.classname}, error: {e}, traceback: {traceback.format_exc()}')
+
     def stop(self):
         """Always called when shutting down."""
-        self.set_state(WorkerState.STOPPED)
+        log.info('Stopping worker')
         self.cleanup()
 
 
@@ -167,7 +242,10 @@ class SharedData(object):
             self.add_value(f'Tracker.opd_std_{ifreq}', float(np.nan), stored=False)
             self.add_value(f'Tracker.velocity_{ifreq}', float(np.nan), stored=False)
 
-        # nn metrics
+        # FIR metrics
+        self.add_value('FIR.short.tracking.e_opd', float(0), stored=False)
+        self.add_value('FIR.short.tracking.e_tip', float(0), stored=False)
+        self.add_value('FIR.short.tracking.e_tilt', float(0), stored=False)
         for iprefix in ['OPD', 'DA1', 'DA2']:
             self.add_value(f'FIR.short.tracking.{iprefix}.u_raw', float(np.nan), stored=False)
             self.add_value(f'FIR.short.tracking.{iprefix}.u', float(np.nan), stored=False)

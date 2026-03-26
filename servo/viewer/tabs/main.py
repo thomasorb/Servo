@@ -125,7 +125,7 @@ class MainTab:
         self.canvas.tag_raise(self.cross_h)
         self.canvas.tag_raise(self.cross_v)
         self.points = []
-        self._roi_mode = False
+        self._roi_mode = True
         self._show_normalized = True
         self.brightness = 0.0
         self.contrast = 1.0

@@ -2,13 +2,14 @@ import time
 from enum import IntEnum, Enum, auto
 import numpy as np
 import logging
+import traceback
 
 import pipython
 import pipython.pitools
 
 from . import config
 from . import core
-from .fsm import StateMachine, Transition, NexlineState, NexlineEvent
+from .fsm import StateMachine, Transition, NexlineState
 
 log = logging.getLogger(__name__)
 
@@ -18,27 +19,26 @@ class NexModes(IntEnum):
     NANO_STEP = 1
     ANALOG = 2
     
-class Nexline(core.Worker, StateMachine):
+class Nexline(core.Worker):
     
     def __init__(self, data, events):
-
-        table = {
-            (NexlineState.IDLE,    NexlineEvent.START): Transition(
+        
+        super().__init__(data, events, State=NexlineState)
+        
+        self.table = {
+            (NexlineState.IDLE, self.Event.START): Transition(
                 NexlineState.RUNNING, action=self._start),
-            (NexlineState.IDLE, NexlineEvent.STOP): Transition(
+            (NexlineState.IDLE, self.Event.STOP): Transition(
                 NexlineState.STOPPED, action=self._stop),
-            (NexlineState.RUNNING, NexlineEvent.STOP): Transition(
+            (NexlineState.RUNNING, self.Event.STOP): Transition(
                 NexlineState.STOPPED, action=self._stop),
-            (NexlineState.RUNNING, NexlineEvent.MOVE): Transition(
+            (NexlineState.RUNNING, self.Event.MOVE): Transition(
                 NexlineState.MOVING, action=self._move),
-            (NexlineState.MOVING, NexlineEvent.STOP_MOVING): Transition(
+            (NexlineState.MOVING, self.Event.STOP_MOVING): Transition(
                 NexlineState.RUNNING, action=self._stop_moving),
         }
 
-        core.Worker.__init__(self, data, events)
-        StateMachine.__init__(self, NexlineState.IDLE, table)
 
-        self.dispatch(NexlineEvent.START)
 
     def _start(self, _):
         log.info('Starting Nexline')
@@ -52,7 +52,7 @@ class Nexline(core.Worker, StateMachine):
             
             if not self.pidevice.connected:
                 log.error('error at usb connection')
-                self.dispatch(NexlineEvent.STOP)
+                self.dispatch(self.Event.STOP)
 
             pipython.pitools.waitonready(self.pidevice)
     
@@ -67,34 +67,8 @@ class Nexline(core.Worker, StateMachine):
             log.info('Nexline initialized')
             
         except Exception as e:
-            log.error(f'error during init: {e}')
-            self.dispatch(NexlineEvent.STOP)
-
-    # Hooks (facultatif)
-    def on_enter_running(self, _):
-        log.info(">> RUNNING")
-            
-        # running loop
-        # while True:
-        #     try:
-        #         self.poll()
-                
-        #         if self.state is FsmState.STOPPED:
-        #             break
-        #         time.sleep(0.1)
-        #     except KeyboardInterrupt:
-        #         log.error('Keyboard interrupt')
-        #         self.events('Servo.stop').set()
-                
-        
-    def on_exit_running(self, _):
-        log.info("<< RUNNING")
-
-    def _publish_state(self, state=None):
-        super()._publish_state(state=state)
-        try:
-            self.data['Nexline.state'][0] = float(state.value)
-        except Exception: pass
+            log.error(f'error during init: {e}, traceback: {traceback.format_exc()}')
+            self.dispatch(self.Event.STOP)
 
     def to_opd(self, mpd):
         """convert mpd to opd"""
@@ -104,17 +78,6 @@ class Nexline(core.Worker, StateMachine):
         """convert opd to mpd"""
         return opd / 2 * np.cos(np.deg2rad(config.LASER_ANGLE))
         
-    def loop_once(self):
-        try:
-            self.poll()
-            
-            #if self.state is NexlineState.STOPPED:
-            #    return
-            time.sleep(0.1)
-        except KeyboardInterrupt:
-            log.error('Keyboard interrupt')
-            self.events('Nexline.stop').set()
-
     def _stop(self, _):
         log.info('Stopping Nexline')
         self.stop()
@@ -132,15 +95,6 @@ class Nexline(core.Worker, StateMachine):
             return next(iter(answer[config.NEXLINE_CHANNEL].values()))
         except Exception as e:
             log.error(f'badly formatted answer: {e}')
-
-    def poll(self):
-        evs = self.events
-
-        for iname in config.NEXLINE_EVENTS:
-            if evs.get('Nexline.' + iname) and evs['Nexline.' + iname].is_set():
-                evs['Nexline.' + iname].clear()
-                self.dispatch(getattr(NexlineEvent, iname.upper()), payload=None)
-
 
     def get_pos(self):
         """return the Nexline encoded position
@@ -242,7 +196,7 @@ class Nexline(core.Worker, StateMachine):
         else:
             log.error(f'bad relative opd: {opd}')
 
-        self.dispatch(NexlineEvent.STOP_MOVING)
+        self.dispatch(self.Event.STOP_MOVING)
 
     def _stop_moving(self, _):
         log.info('Nexline move stopping')

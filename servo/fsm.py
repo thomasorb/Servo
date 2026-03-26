@@ -5,36 +5,18 @@ from enum import IntEnum, auto
 
 import logging
 
+from . import config
+
 log = logging.getLogger(__name__)
 
 Guard = Callable[['StateMachine', Any], bool]
 Action = Callable[['StateMachine', Any], None]
-
-class NexlineEvent(IntEnum):
-    START = auto()
-    STOP = auto()
-    MOVE = auto()
-    STOP_MOVING = auto()
 
 class NexlineState(IntEnum):
     IDLE = auto()
     RUNNING = auto()
     MOVING = auto()
     STOPPED = auto()
-
-class ServoEvent(IntEnum):
-    START = auto()
-    STOP = auto()
-    NORMALIZE = auto()
-    ERROR = auto()
-    MOVE_TO_OPD = auto()
-    OPEN_LOOP = auto()
-    CLOSE_LOOP = auto()
-    ROI_MODE = auto()
-    FULL_FRAME_MODE = auto()
-    RESET_ZPD = auto()
-    WALK_TO_OPD = auto()
-    CALIBRATE_VELOCITY = auto()
 
 class ServoState(IntEnum):
     IDLE = auto()
@@ -62,6 +44,7 @@ class StateMachine:
     def __init__(self, initial, table):
         self.state = initial
         self.table = table
+    
         log.info(f"FSM init -> {self.state.name}")
         self._call_hook(f"on_enter_{self.state.name.lower()}", None)
 
@@ -73,9 +56,13 @@ class StateMachine:
     def _publish_state(self, state=None):
         if state is None:
             state = self.state
-        log.info(f' >>>> entering state {state.name}')
+        log.info(f'{self.__class__.__name__} entering state {state.name}')
 
     def dispatch(self, event, payload: Any = None) -> bool:
+        if self.table is None:
+            log.error("FSM transition table is not defined. self.table is None.")
+            return False
+            
         tr = self.table.get((self.state, event))
         if tr is None:
             #raise TransitionError(f"Invalid transition {self.state.name} --{event.name}--> ?")

@@ -36,7 +36,7 @@ class Tracker(core.Worker):
         self.window_sizes = dict()
         for ifreq in self.frequencies:
             self.window_sizes[ifreq] = min(max(1, config.TRACKER_FREQUENCY // ifreq), config.TRACKER_BUFFER_SIZE)
-        print(self.window_sizes)
+        log.info(f'Tracker window sizes: {self.window_sizes}')
         log.info('Tracker initialized')
 
 
@@ -59,7 +59,7 @@ class Tracker(core.Worker):
             velocity = (meanopd - self.last_opds[frequency][-window_size]) / (self.frame_time - self.last_times[frequency][-window_size])
             self.data[f'Tracker.velocity_{frequency}'][0] = float(velocity)
             
-        
+
         
     def loop_once(self):
         self.frame_time = time.perf_counter()
@@ -75,7 +75,6 @@ class Tracker(core.Worker):
         loop_end_time = time.perf_counter()
         time.sleep(max(0, 1./config.TRACKER_FREQUENCY - (loop_end_time - self.frame_time)))
         self.data['Tracker.frequency'][0] = 1/(time.perf_counter() - self.frame_time)
-
         
     def cleanup(self):
         pass

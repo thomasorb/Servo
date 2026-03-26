@@ -63,8 +63,6 @@ TRACKER_STATS_FREQUENCIES = [1, 3, 10, 30, 100] # Hz
 
 SERVO_EVENTS = (
     'normalize',
-    'stop',
-    'start',
     'move_to_opd',
     'close_loop',
     'open_loop',
@@ -76,9 +74,13 @@ SERVO_EVENTS = (
 )
 
 NEXLINE_EVENTS = (
-    'start',
     'move',
-    'stop_move',
+    'stop_moving',
+    )
+
+TRACKER_EVENTS = (
+    'start_recording',
+    'stop_recording',
     )
 
 # use only this part of the profiles for normalization coeffs computation
