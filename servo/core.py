@@ -30,7 +30,9 @@ class Worker(StateMachine):
         events_dict = {event.upper(): auto() for event in getattr(config, f'{self.__class__.__name__.upper()}_EVENTS', [])}
         events_dict['START'] = auto()
         events_dict['STOP'] = auto()
-        
+
+        self.stop_event = self.events[f'{self.classname}.' + 'stop']
+                
         self.Event = IntEnum('Event', events_dict)
 
         table = {
@@ -64,17 +66,20 @@ class Worker(StateMachine):
         # running loop
         while True:
             try:
+                self.poll()
+                
+                if self.state is self.State.STOPPED:
+                    break
+                if self.stop_event.is_set():
+                    break
+                
+                
                 if hasattr(self, 'loop_once'):
                     try:
                         self.loop_once()
                     except Exception as e:
                         log.error('Exception at loop_once:\n' + traceback.format_exc())
                         self.dispatch(self.Event.STOP)
-
-                self.poll()
-
-                if self.state is self.State.STOPPED:
-                    break
                 
                 time.sleep(1e-2)
             except KeyboardInterrupt:

@@ -221,7 +221,7 @@ class Viewer(core.Worker):
         self.move_to_opd_btn.pack(side=tk.RIGHT, padx=10)
 
         self.walk_to_opd_btn = ttk.Button(toolbar, text='WALK to OPD', style='Green.TButton',
-                                          command=lambda: self._set_event('Servo.walk_to_opd'))
+                                          command=self.toggle_walk_to_opd)
         self.walk_to_opd_btn.pack(side=tk.RIGHT, padx=10)
 
         self.close_loop_btn = ttk.Button(toolbar, text='CLOSE LOOP', style='Orange.TButton',
@@ -396,6 +396,13 @@ class Viewer(core.Worker):
             self._set_event('Servo.roi_mode')
         else:
             self._set_event('Servo.full_frame_mode')
+
+    def toggle_walk_to_opd(self):
+        st = self._servo_state()
+        if st == ServoState.WALKING:
+            self._set_event('Servo.stop_walking')
+        else:
+            self._set_event('Servo.walk_to_opd')
 
     def _reset_tiptilt(self):
         try:
@@ -603,6 +610,13 @@ class Viewer(core.Worker):
             # default -> if RUNNING, we show 'CLOSE LOOP'; otherwise keep this label too
             self.close_loop_btn.config(text='CLOSE LOOP')
 
+    def _sync_walk_to_opd_button(self, state):
+        """Set button label to the next valid action based on current state."""
+        if state == ServoState.WALKING:
+            self.walk_to_opd_btn.config(text='STOP WALKING')
+        else:
+            self.walk_to_opd_btn.config(text='WALK to OPD')
+
     def _set_enabled(self, widget, enabled: bool):
         try:
             if enabled:
@@ -616,22 +630,24 @@ class Viewer(core.Worker):
         """Enable/disable toolbar buttons according to Servo.state."""
         st = self._servo_state()
         
-        # STOP: disabled when loop is closed (TRACKING)
-        self._set_enabled(self.stop_btn, st != ServoState.TRACKING)
+        # STOP: disabled when loop is closed (TRACKING or WALKING)
+        self._set_enabled(self.stop_btn, st not in (ServoState.TRACKING, ServoState.WALKING))
         
         # CLOSE/OPEN LOOP enabled only in RUNNING or TRACKING
         can_loop_toggle = st in (ServoState.RUNNING, ServoState.TRACKING)
         self._set_enabled(self.close_loop_btn, bool(can_loop_toggle))
         self._sync_close_loop_button(st)
 
+        # WALK to OPD enabled only in RUNNING or WALKING
+        can_walk_toggle = st in (ServoState.TRACKING, ServoState.WALKING)
+        self._set_enabled(self.walk_to_opd_btn, bool(can_walk_toggle))
+        self._sync_walk_to_opd_button(st)
+        
         # NORMALIZE only in RUNNING or TRACKING
         self._set_enabled(self.normalize_btn, st in (ServoState.RUNNING, ServoState.TRACKING))
 
         # MOVE to OPD only in TRACKING
         self._set_enabled(self.move_to_opd_btn, st == ServoState.TRACKING)
-
-        # WALK to OPD only in TRACKING
-        self._set_enabled(self.walk_to_opd_btn, st == ServoState.TRACKING)
 
         # Reset TIP-TILT in RUNNING or TRACKING
         self._set_enabled(self.reset_tiptilt_btn, st in (ServoState.RUNNING, ServoState.TRACKING))
@@ -641,6 +657,9 @@ class Viewer(core.Worker):
 
         # Reset ZPD only in TRACKING
         self._set_enabled(self.reset_zpd_btn, st == ServoState.TRACKING)
+
+        # Calibrate Velocity only in RUNNING
+        self._set_enabled(self.calibrate_velocity_btn, st == ServoState.RUNNING)
         
     # refresh loop
     def refresh(self):

@@ -23,12 +23,12 @@ class ServoState(IntEnum):
     RUNNING = auto()
     STOPPED = auto()
     TRACKING = auto()
+    WALKING = auto()
 
 class WorkerState(IntEnum):
     IDLE = auto()
     RUNNING = auto()
     STOPPED = auto()
-
 
 @dataclass(frozen=True)
 class Transition:
@@ -56,7 +56,7 @@ class StateMachine:
     def _publish_state(self, state=None):
         if state is None:
             state = self.state
-        log.info(f'{self.__class__.__name__} entering state {state.name}')
+        log.info(f'{self.__class__.__name__}: entering state {state.name}')
 
     def dispatch(self, event, payload: Any = None) -> bool:
         if self.table is None:
@@ -66,7 +66,7 @@ class StateMachine:
         tr = self.table.get((self.state, event))
         if tr is None:
             #raise TransitionError(f"Invalid transition {self.state.name} --{event.name}--> ?")
-            log.warning(f"Invalid transition {self.state.name} --{event.name}--> ?")
+            log.warning(f"{self.__class__.__name__}: Invalid transition {self.state.name} --{event.name}--> ?")
             return False
         if tr.guard and not tr.guard(self, payload):
             return False

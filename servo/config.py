@@ -60,6 +60,8 @@ SERIAL_STATUS_FRAME_SIZE = 9 # number of bytes in the status frame (header 3 + p
 TRACKER_BUFFER_SIZE = 10000
 TRACKER_FREQUENCY = 100 # Hz
 TRACKER_STATS_FREQUENCIES = [1, 3, 10, 30, 100] # Hz
+TRACKER_RECORD_SIZE = 10000 # max number of records
+TRACKER_RECORD_FREQUENCY = 10 # Hz
 
 SERVO_EVENTS = (
     'normalize',
@@ -70,6 +72,7 @@ SERVO_EVENTS = (
     'full_frame_mode',
     'reset_zpd',
     'walk_to_opd',
+    'stop_walking',
     'calibrate_velocity',
 )
 
@@ -88,11 +91,10 @@ NORMALIZATION_LEN_RATIO = 0.7
 
 NEXLINE_CHANNEL = 1
 NEXLINE_MOVING_VELOCITY = 20 # um/s (optical)
-NEXLINE_STEP_SIZE = 5 # um in mechanical path difference
-NEXLINE_TIMEOUT = 300 # s
+NEXLINE_STEP_SIZE = 13.6 # um in optical path difference
+NEXLINE_TIMEOUT = 300000 # s
 NEXLINE_MIN_VELOCITY = 0.001
 NEXLINE_MAX_VELOCITY = 50
 NEXLINE_POS_CALIB_FACTOR = 1.
 NEXLINE_NEG_CALIB_FACTOR = 1.
 
-NN_I_SCALE = 0.2

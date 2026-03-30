@@ -69,10 +69,11 @@ class DAQ(core.Worker):
             self.last_levels = levels
 
             for (ichannel, ilevel) in zip(config.DAQ_PIEZO_CHANNELS, levels):
-                
-                self.ao_device.a_out(ichannel, Range.UNI10VOLTS,
-                                     AOutFlag.DEFAULT, float(ilevel))
-            
+                try:
+                    self.ao_device.a_out(ichannel, Range.UNI10VOLTS,
+                                         AOutFlag.DEFAULT, float(ilevel))
+                except Exception as e:
+                    log.warning(f"Error at piezo channel {ichannel} and level {ilevel}:\n {traceback.format_exc()}")
 
             self.data['DAQ.piezos_level_actual'][:3] = np.array(
                 levels, dtype=config.DAQ_PIEZO_LEVELS_DTYPE)
