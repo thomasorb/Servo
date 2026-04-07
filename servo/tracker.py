@@ -14,7 +14,7 @@ log = logging.getLogger(__name__)
 
 
 class Record():
-    """Class to record tracker the data obtained by the tracker class.
+    """Class to record data obtained by tracker class.
 
     This class contains numpy arrays to store the history of OPD, tip,
     tilt, and time values. It provides methods to append new data and
@@ -29,21 +29,31 @@ class Record():
     current position if the buffer is not full, or the entire buffer
     if it is full).
     """
-    def __init__(self):        
+    def __init__(self, ir_image_shape):
         self.opd = np.zeros(config.TRACKER_RECORD_SIZE)
         self.tip = np.zeros(config.TRACKER_RECORD_SIZE)
         self.tilt = np.zeros(config.TRACKER_RECORD_SIZE)
         self.time = np.zeros(config.TRACKER_RECORD_SIZE)
         self.velocity = np.zeros(config.TRACKER_RECORD_SIZE)
+        self.ir_image_shape = ir_image_shape
+        self._init_ir_images()
         self.position = 0
         self.full = False
 
-    def append(self, opd, tip, tilt, time, velocity):
+    def _init_ir_images(self):
+        self.ir_images = np.zeros((config.TRACKER_RECORD_SIZE, *self.ir_image_shape), dtype=config.FRAME_DTYPE)
+        self.ir_images_normalized = np.zeros_like(self.ir_images)        
+        
+
+    def append(self, opd, tip, tilt, time, velocity, ir_image, ir_image_nomalized):
         self.opd[self.position] = opd
         self.tip[self.position] = tip
         self.tilt[self.position] = tilt
         self.time[self.position] = time
         self.velocity[self.position] = velocity
+        self.ir_images[self.position] = ir_image
+        self.ir_images_normalized[self.position] = ir_image_nomalized
+        
         self.position += 1
         if self.position >= config.TRACKER_RECORD_SIZE:
             self.full = True
@@ -56,6 +66,9 @@ class Record():
         import pandas as pd
         timestamp = time.strftime("%Y%m%d-%H%M%S")
         filename = f'servo_tracker_record_{timestamp}.csv'
+        ircube_filename = f'servo_tracker_ircube_{timestamp}.npy'
+        ircube_normalized_filename = f'servo_tracker_ircube_normalized_{timestamp}.npy'
+        
         if self.full:
             data = {
                 'opd': self.opd,
@@ -64,6 +77,8 @@ class Record():
                 'velocity': self.velocity,
                 'time': self.time,
             }
+            ir_cube = self.ir_images.copy()
+            ir_cube_normalized = self.ir_images_normalized.copy()
         else:
             data = {
                 'opd': self.opd[:self.position],
@@ -72,12 +87,20 @@ class Record():
                 'time': self.time[:self.position],
                 'velocity': self.velocity[:self.position],
             }
+            ir_cube = self.ir_images[:self.position].copy()
+            ir_cube_normalized = self.ir_images_normalized[:self.position].copy()
+            
+        # saving date
         df = pd.DataFrame(data)
-        
-        # lors du save
         df["time_iso"] = pd.to_datetime(df["time"], unit="s", utc=True)
         df.to_csv(filename, index=False)
         log.info(f'Tracker data saved to {filename}')
+
+        # saving ir cube
+        np.save(ircube_filename, ir_cube)
+        log.info(f'Tracker ir cube saved to {ircube_filename}')
+        np.save(ircube_normalized_filename, ir_cube_normalized)
+        log.info(f'Tracker normalized ir cube saved to {ircube_normalized_filename}')
         
         
 
@@ -114,10 +137,13 @@ class Tracker(core.Worker):
 
         self.window_sizes = dict()
         for ifreq in self.frequencies:
-            self.window_sizes[ifreq] = min(max(1, config.TRACKER_FREQUENCY // ifreq), config.TRACKER_BUFFER_SIZE)
+            self.window_sizes[ifreq] = min(max(1, config.TRACKER_FREQUENCY // ifreq),
+                                           config.TRACKER_BUFFER_SIZE)
         log.info(f'Tracker window sizes: {self.window_sizes}')
 
-        self.record = Record()
+        self._init_ir_image_specs()
+        
+        self.record = Record(self.ir_image_shape)
         self.is_recording = False
 
         self.start_perf = time.perf_counter()
@@ -126,6 +152,27 @@ class Tracker(core.Worker):
         self._last_velocity = 0.0
 
         log.info('Tracker initialized')
+
+    def _init_ir_image_specs(self):
+        self.profile_len = int(self.data['IRCamera.profile_len'][0])
+        self.ir_image_size = self.profile_len**2
+        self.ir_image_shape = (self.profile_len, self.profile_len)
+        self._init_normalization_coeffs()
+
+    def _get_normalization_coeffs_tag(self):
+        return self.data['Servo.roinorm_min'][:config.TRACKER_TAG_SIZE].copy()
+        
+    def _init_normalization_coeffs(self):
+        try:
+            self.normalization_coeffs_tag = self._get_normalization_coeffs_tag()
+            self.raw_min = np.array(self.data['Servo.roinorm_min'][:self.ir_image_size]).reshape(
+                self.ir_image_shape).T
+            self.raw_max = np.array(self.data['Servo.roinorm_max'][:self.ir_image_size]).reshape(
+                self.ir_image_shape).T
+        except Exception as e:
+            log.error(f'Error initializing normalization coefficients: {e}\n{traceback.format_exc()}')
+            self.raw_min = np.zeros(self.ir_image_shape)
+            self.raw_max = np.ones(self.ir_image_shape)
 
 
     def _compute_stats(self, frequency):
@@ -165,16 +212,40 @@ class Tracker(core.Worker):
             # converted to a real timestamp by adding the start time of
             # the tracker
             meantimestamp = self.start_wall + (meantime - self.start_perf)
-            self.record.append(meanopd, meantip, meantilt, meantimestamp, velocity)
+            ir_image = self.data['IRCamera.roi'][:self.ir_image_size].copy()
+            ir_image = ir_image.reshape(self.ir_image_shape).T
+
+            # detect roi size change
+            _profile_len = int(self.data['IRCamera.profile_len'][0])
+            if _profile_len != self.profile_len:
+                log.warning(f'IR image size changed from {self.ir_image_size} to {_profile_len}. Reinitializing IR image buffers.')
+                self._init_ir_image_specs()
+                self.record._init_ir_images()
+
+            # check first five values of roinorm_min to detect a new normalization. Reinit if changed.
+            if np.any(self._get_normalization_coeffs_tag() != self.normalization_coeffs_tag):
+                log.warning('Normalization coefficients changed. Reinitializing IR image buffers.')
+                self._init_normalization_coeffs()
+
+            ir_image_normalized = (ir_image - self.raw_min) / (self.raw_max - self.raw_min)
+
+            self.record.append(meanopd, meantip, meantilt, meantimestamp, velocity,
+                               ir_image, ir_image_normalized)
             
 
     def _start_recording(self, _):
         log.info('Starting tracker recording')
-        self.is_recording = True
+        if self.is_recording:
+            log.warning('Tracker recording is already running. Saving current record before starting a new one.')
+            self.record.save()
+        else:
+            self.is_recording = True
+            self.data['Tracker.is_recording'][0] = True
 
     def _stop_recording(self, _):
         log.info('Stopping tracker recording')
         self.is_recording = False
+        self.data['Tracker.is_recording'][0] = False
         self.record.save()
         
     def loop_once(self):

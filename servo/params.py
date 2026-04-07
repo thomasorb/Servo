@@ -22,3 +22,6 @@ FIR_SCALE_ANG = 1e-6 # 1 urad
 FIR_LMS_MU = 0.01
 
 NEXLINE_VELOCITY_ADJUSTMENT_GAIN = 1.3 # must be > 1 to move back the piezo near the 5 V range.
+
+IA_TRAINING_SCALE_OPD = 0.001 # scale for piezo random walk during IA training
+IA_TRAINING_SCALE_DA = 0.01 # scale for piezo random walk during IA training

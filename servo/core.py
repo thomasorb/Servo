@@ -238,6 +238,7 @@ class SharedData(object):
         self.add_array('SerialComm.last_status_frame', np.zeros(config.SERIAL_STATUS_FRAME_SIZE, dtype=np.uint8), stored=False)
 
         self.add_value('Tracker.state', float(0), stored=False)
+        self.add_value('Tracker.is_recording', False, stored=False)
         self.add_value('Tracker.frequency', float(np.nan), stored=False)
         frequencies = [int(ifreq) for ifreq in config.TRACKER_STATS_FREQUENCIES]
         for ifreq in frequencies:

@@ -131,6 +131,8 @@ class Viewer(core.Worker):
         # state
         self._close_loop = False
         self.show_normalized = True
+        self.record = False
+        self.is_training = False
         self.current_lut_name = 'magma'
         self.current_lut = build_lut(self.current_lut_name)
 
@@ -210,6 +212,11 @@ class Viewer(core.Worker):
         self.shownorm_btn = ttk.Button(toolbar, text='Show Un-normalized', command=self.toggle_normalized)
         self.shownorm_btn.pack(side=tk.LEFT, padx=10)
 
+        self.record_btn = ttk.Button(toolbar, text='Record', style='Orange.TButton',
+                                     command=self.toggle_record)
+        self.record_btn.pack(side=tk.LEFT, padx=10)
+
+
         ttk.Button(toolbar, text='Reset Zoom', command=self.main_tab.reset_zoom).pack(side=tk.LEFT, padx=10)
 
         self.stop_btn = ttk.Button(toolbar, text='STOP', style='Red.TButton',
@@ -247,8 +254,11 @@ class Viewer(core.Worker):
         self.calibrate_velocity_btn = ttk.Button(toolbar, text='Calibrate Velocity',
                                                  command=lambda: self._set_event('Servo.calibrate_velocity'))
         self.calibrate_velocity_btn.pack(side=tk.RIGHT, padx=10)
+
+        self.train_ia_btn = ttk.Button(toolbar, text='Train IA', command=lambda: self.toggle_train_ia())
+        self.train_ia_btn.pack(side=tk.RIGHT, padx=10)
         
-                                                         # initial sync (enable/disable according to current state)
+        # initial sync (enable/disable according to current state)
         self._update_commands_enabled()
         
     # right column
@@ -381,6 +391,14 @@ class Viewer(core.Worker):
         self.show_normalized = not self.show_normalized
         self.shownorm_btn.config(text='Show Un-normalized' if self.show_normalized else 'Show Normalized')
 
+    def toggle_record(self):
+        self.record = not self.record
+        self.record_btn.config(text='Record' if self.record else 'Stop Recording')
+        if self.record:
+            self.events['Tracker.start_recording'].set() # start recording tracker data
+        else:
+            self.events['Tracker.stop_recording'].set() # stop recording tracker data
+
     def toggle_close_loop(self):
         """Send the only valid loop-transition from current state."""
         st = self._servo_state()
@@ -389,6 +407,11 @@ class Viewer(core.Worker):
         elif st == ServoState.TRACKING:
             self._set_event('Servo.open_loop')
         # labels & enablement will be updated by next refresh/_update_status()
+
+    def toggle_train_ia(self):
+        """Toggle training of the IA model."""
+        self.is_training = not self.is_training
+        self.train_ia_btn.config(text='Stop IA Training' if self.is_training else 'Train IA')
         
     def toggle_roi_mode(self):
         self.main_tab._roi_mode = not self.main_tab._roi_mode
@@ -660,6 +683,13 @@ class Viewer(core.Worker):
 
         # Calibrate Velocity only in RUNNING
         self._set_enabled(self.calibrate_velocity_btn, st == ServoState.RUNNING)
+
+        # Record
+        self._set_enabled(self.record_btn, st in (ServoState.RUNNING, ServoState.TRACKING))
+        if bool(self.data['Tracker.is_recording'][0]):
+            self.record_btn.config(text='Stop Recording')
+        else:
+            self.record_btn.config(text='Record')
         
     # refresh loop
     def refresh(self):
@@ -768,7 +798,22 @@ class Viewer(core.Worker):
         except Exception:
             self.actual_opd_target.set('—')
             self.actual_velocity_target.set('—')
-            
+
+
+        # train ia. If training in progress, slowly moves all three piezos in a small random walk to generate training data; otherwise, keep them still.
+        try:
+            if self.is_training:
+                scale_da = self.data['params.IA_TRAINING_SCALE_DA'][0]
+                scale_opd = self.data['params.IA_TRAINING_SCALE_OPD'][0]
+                delta_opd = np.random.uniform(low=-1, high=1) * scale_opd  # small random uniform step in OPD
+                delta_da1 = np.random.uniform(low=-1, high=1) * scale_da  # small random normal step in DA-1
+                delta_da2 = np.random.uniform(low=-1, high=1) * scale_da  # small random normal step in DA-2
+                
+                self.data['DAQ.piezos_level'][:3] = np.clip(self.data['DAQ.piezos_level'][:3].copy() + np.array([delta_opd, delta_da1, delta_da2]), 0.5, 9.5)
+                
+        except Exception as e:
+            log.error(f"Error during IA training step: {e}: {traceback.format_exc()}")
+        
         # schedule
         self.root.after(100, self.refresh)
             
