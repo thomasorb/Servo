@@ -334,7 +334,8 @@ class Servo(core.Worker):
 
         if priority is None:
             log.info(f"Starting worker {WorkerClass.__name__} with default priority")
-            priority={"niceness": config.SERVO_DEFAULT_NICENESS, "cpus": [1]}
+            priority={"niceness": config.SERVO_DEFAULT_NICENESS,
+                      "cpus": config.SERVO_CPU_DEFAULT}
             
         worker = multiprocessing.Process(
             target=worker_process,
@@ -381,7 +382,7 @@ class Servo(core.Worker):
                     if time.time() - timeout_start > 5:
                         log.error("Timeout waiting for IRCamera initialization; starting viewer anyway")
                         break
-            self.start_worker(viewer.Viewer, priority={"niceness": config.SERVO_LOW_NICENESS, "cpus": [0]})
+            self.start_worker(viewer.Viewer, priority={"niceness": config.SERVO_LOW_NICENESS, "cpus": [config.SERVO_CPU_VIEWER]})
 
         
     def _normalize(self, _):
@@ -575,6 +576,7 @@ class Servo(core.Worker):
         move_startt = time.perf_counter()
         refresh_startt = time.perf_counter()
         last_update_time = time.perf_counter()
+        last_normalization_time = time.perf_counter()
 
         step_velocity_adjustment_factor = 1.0 # nexline velocity adjustment factor for each step to compensate for piezo contribution, will be updated at each step end based on the estimated velocity error ratio
 
@@ -659,6 +661,11 @@ class Servo(core.Worker):
                         pid_da2_control.update_config(out_min=da2_min, out_max=da2_max)
 
                         refresh_startt = time.perf_counter()
+
+                    if time.perf_counter() - last_normalization_time > self.data['params.SERVO_WALK_NORMALIZE_TIME'][0]:
+                        self.events['Tracker.normalize'].set() #
+                        last_normalization_time = time.perf_counter()
+
 
 
                     if ((np.abs(opd - final_opd_target) < config.OPD_TOLERANCE)
@@ -896,7 +903,8 @@ class Servo(core.Worker):
         x = self.data['IRCamera.profile_x'][0]
         y = self.data['IRCamera.profile_y'][0]
         self.start_worker(ircam.IRCamera,
-                          priority={"niceness": config.SERVO_MAX_NICENESS, "cpus": [2]},
+                          priority={"niceness": config.SERVO_MAX_NICENESS,
+                                    "cpus": [config.SERVO_CPU_IRCAM]},
                           frame_shape=(w, w),
                           frame_center=(x, y),
                           roi_mode=True)
@@ -910,7 +918,10 @@ class Servo(core.Worker):
         log.info("Switching to full frame mode")
         self.events['IRCamera.stop'].set()
         time.sleep(0.5) # wait for camera to stop
-        self.start_worker(ircam.IRCamera, -20, roi_mode=False)
+        self.start_worker(ircam.IRCamera,
+                          priority={"niceness": config.SERVO_MAX_NICENESS,
+                                    "cpus": [config.SERVO_CPU_IRCAM]},
+                          roi_mode=False)
                 
     
     def _stop(self, _):

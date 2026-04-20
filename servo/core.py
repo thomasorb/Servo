@@ -178,7 +178,7 @@ class SharedData(object):
         self.add_array('Servo.pixels_x', np.zeros(config.FULL_FRAME_SHAPE[0],
                                                   dtype=int), stored=True)
         self.add_array('Servo.pixels_y', np.zeros(config.FULL_FRAME_SHAPE[1],
-                                                  dtype=int), stored=True)
+                                                  dtype=int), stored=True)        
         
         
         self.add_array('Servo.roinorm_min', np.zeros(config.FULL_FRAME_SIZE,
@@ -239,6 +239,7 @@ class SharedData(object):
 
         self.add_value('Tracker.state', float(0), stored=False)
         self.add_value('Tracker.is_recording', False, stored=False)
+        self.add_value('Tracker.is_rt_normalizing', False, stored=False)
         self.add_value('Tracker.frequency', float(np.nan), stored=False)
         frequencies = [int(ifreq) for ifreq in config.TRACKER_STATS_FREQUENCIES]
         for ifreq in frequencies:

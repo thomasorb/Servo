@@ -1,3 +1,5 @@
+PROFILE_WIDTH = 4 # pixels, width of the profile used for servoing
+
 PID_WALK_OPD = [2e-5, 0.02, 0]
 PID_TRACK_OPD = [2e-5, 2e-6, 0.]
 PID_TRACK_DA1 = [-0.0003, -5e-5, 0.]
@@ -25,3 +27,5 @@ NEXLINE_VELOCITY_ADJUSTMENT_GAIN = 1.3 # must be > 1 to move back the piezo near
 
 IA_TRAINING_SCALE_OPD = 0.001 # scale for piezo random walk during IA training
 IA_TRAINING_SCALE_DA = 0.01 # scale for piezo random walk during IA training
+
+SERVO_WALK_NORMALIZE_TIME = 60.0 # s, time to record values for normalization coeffs computation during walk to opd

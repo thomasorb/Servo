@@ -8,6 +8,7 @@ from datetime import datetime
 from . import core
 from . import config
 from . import utils
+from . import faster
 from .fsm import Transition
 
 log = logging.getLogger(__name__)
@@ -101,6 +102,32 @@ class Record():
         log.info(f'Tracker ir cube saved to {ircube_filename}')
         np.save(ircube_normalized_filename, ir_cube_normalized)
         log.info(f'Tracker normalized ir cube saved to {ircube_normalized_filename}')
+
+    def get_normalization_coeffs(self, width):
+
+        if self.position < 100:
+            log.warning(f'Not enough data to compute normalization coefficients: only {self.position} frames recorded')
+            return None, None, None, None
+        
+        ircube = self.ir_images[:self.position].copy()
+        
+        # recompute normalization maps
+        ix, iy = np.array(ircube.shape[1:])//2
+        profile_len = ircube.shape[1]
+        hprofiles = np.empty((ircube.shape[0], ircube.shape[1]), dtype=np.float32)
+        vprofiles = np.empty_like(hprofiles)
+        for iz, iframe in enumerate(ircube):
+            ivprof, ihprof, _ = faster.compute_profiles_local_f32(iframe.astype(np.float32, copy=False).T,
+                                                                  int(iy), int(ix), int(width),
+                                                                  int(profile_len), True)
+            hprofiles[iz, :] = ihprof.copy()
+            vprofiles[iz, :] = ivprof.copy()
+
+        hnorm = utils.get_normalization_coeffs(hprofiles)      
+        vnorm = utils.get_normalization_coeffs(vprofiles)
+        roinorm_min, roinorm_max = utils.get_roi_normalization_coeffs(ircube)
+
+        return hnorm, vnorm, roinorm_min.T, roinorm_max.T
         
         
 
@@ -114,8 +141,10 @@ class Tracker(core.Worker):
                 self.State.RUNNING, action=self._start_recording),
             (self.State.RUNNING, self.Event.STOP_RECORDING): Transition(
                 self.State.RUNNING, action=self._stop_recording),
+            (self.State.RUNNING, self.Event.NORMALIZE): Transition(
+                self.State.RUNNING, action=self._normalize),        
         }
-
+        
         self.frequencies = [int(ifreq) for ifreq in config.TRACKER_STATS_FREQUENCIES]
         if config.TRACKER_FREQUENCY not in self.frequencies:
             self.frequencies.append(config.TRACKER_FREQUENCY)
@@ -247,6 +276,22 @@ class Tracker(core.Worker):
         self.is_recording = False
         self.data['Tracker.is_recording'][0] = False
         self.record.save()
+
+    def _normalize(self, _):
+        log.info('Normalizing tracker data')
+        width = int(self.data['params.PROFILE_WIDTH'][0])
+        
+        hnorm, vnorm, roinorm_min, roinorm_max = self.record.get_normalization_coeffs(width)
+        
+        self.data['Servo.hnorm_min'][:self.profile_len] = hnorm[:,0]
+        self.data['Servo.hnorm_max'][:self.profile_len] = hnorm[:,1]
+        self.data['Servo.vnorm_min'][:self.profile_len] = vnorm[:,0]
+        self.data['Servo.vnorm_max'][:self.profile_len] = vnorm[:,1]
+        self.data['Servo.roinorm_min'][:self.profile_len**2] = roinorm_min.astype(config.FRAME_DTYPE).flatten()
+        self.data['Servo.roinorm_max'][:self.profile_len**2] = roinorm_max.astype(config.FRAME_DTYPE).flatten()
+
+        self._init_normalization_coeffs()
+        
         
     def loop_once(self):
         

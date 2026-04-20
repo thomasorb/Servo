@@ -28,7 +28,50 @@ static int ensure_int32_1d(PyArrayObject* a) {
            PyArray_ISCONTIGUOUS(a);
 }
 
+#include <stdint.h>
 
+static inline int is_nan_f32(float v)
+{
+    uint32_t u;
+    memcpy(&u, &v, sizeof(float));
+    return (u & 0x7fffffffU) > 0x7f800000U;
+}
+
+static void replace_nan_with_min_f32(PyArrayObject *profile)
+{
+    float *data = (float *)PyArray_DATA(profile);
+    npy_intp n = PyArray_SIZE(profile);
+
+    float min_val = INFINITY;
+    int has_valid = 0;
+
+    /* 1) trouver le minimum (ignorer NaN) */
+    for (npy_intp i = 0; i < n; ++i) {
+        float v = data[i];
+        if (!is_nan_f32(v)) {
+            if (v < min_val) {
+                min_val = v;
+            }
+            has_valid = 1;
+        }
+    }
+
+    /* cas pathologique : tout est NaN */
+    if (!has_valid) {
+        for (npy_intp i = 0; i < n; ++i) {
+            data[i] = 0.0f;
+        }
+        return;
+    }
+
+    /* 2) remplacer les NaN par le minimum */
+    for (npy_intp i = 0; i < n; ++i) {
+      if (is_nan_f32(data[i])) {
+            data[i] = min_val;
+	    printf("NaN détecté à l'indice %ld\n", i);
+        }
+    }
+}
 /* ============================================================
    1) compute_profiles_local_f32
       ----------------------------------------------------------
@@ -165,6 +208,10 @@ static PyObject* py_compute_profiles_local_f32(
 
     Py_END_ALLOW_THREADS
 
+    replace_nan_with_min_f32(hprof);
+    replace_nan_with_min_f32(vprof);
+    
+
     /* ---- Build ROI (if requested) ---- */
     PyArrayObject* roi = NULL;
 
@@ -192,7 +239,7 @@ static PyObject* py_compute_profiles_local_f32(
     }
 
     Py_DECREF(a);
-
+    
     if (get_roi)
         return Py_BuildValue("NNN", vprof, hprof, roi);
     else

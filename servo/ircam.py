@@ -96,7 +96,12 @@ class IRCamera(core.Worker):
         min_fps = self.dev.minFps()
         max_fps = self.dev.maxFps()
         log.info(f"fps range: ({self.dev.minFps()} - {self.dev.maxFps()})")
-        self.dev.setFps(max_fps)
+        if self.roi_mode:
+            target_fps = min(max_fps, config.IRCAM_MAX_FPS_ROI_MODE)
+        else:
+            target_fps = min(max_fps, config.IRCAM_MAX_FPS_FF_MODE)
+            
+        self.dev.setFps(target_fps)
         self.dev.updateConfig()  #Data is sent to the device
         log.info(f"current fps: {self.dev.fps()}")
 
@@ -150,6 +155,9 @@ class ConfigObserver(NITLibrary.NITConfigObserver):
     
     def onNucChanged(self, nuc_str, status ):
         log.debug("onNucChanged(" + nuc_str + ", " + str(status) + ")")
+
+    def onInternalError(self, error_str):
+        log.error("onInternalError(" + error_str + ")")
 
 
 class DataObserver(NITLibrary.NITUserObserver):
@@ -234,7 +242,7 @@ class DataObserver(NITLibrary.NITUserObserver):
         try:
             frame_time = time.perf_counter()
             frame_id = int(frame.id())
-            if frame_id == self.last_id:
+            if frame_id <= self.last_id:
                 return
             else:
                 self.last_id = frame_id
@@ -286,7 +294,7 @@ class DataObserver(NITLibrary.NITUserObserver):
                     self.profile_len = int(self.data['IRCamera.profile_len'][0])
                 if self.profile_len > np.min(self.frame_shape):
                     self.profile_len = int(np.min(self.frame_shape))
-                self.iwid = int(self.data['IRCamera.profile_width'][0])
+                self.iwid = int(self.data['params.PROFILE_WIDTH'][0])
 
                 
             if bool(self.arr_full_output[0]):
@@ -337,7 +345,6 @@ class DataObserver(NITLibrary.NITUserObserver):
                     hprofile, self.hmin, self.hmax, inplace=False)
                 self.arr_vprof_norm[:self.profile_len] = utils.normalize_profile(
                     vprofile, self.vmin, self.vmax, inplace=False)
-
                 
             # Levels (3 positions per axis)
             self.hlevels_ws[:] = batch_normalize_and_levels(

@@ -417,8 +417,10 @@ class Viewer(core.Worker):
         self.main_tab._roi_mode = not self.main_tab._roi_mode
         if self.main_tab._roi_mode:
             self._set_event('Servo.roi_mode')
+            self.roi_mode_btn.config(text='FULL FRAME MODE')
         else:
             self._set_event('Servo.full_frame_mode')
+            self.roi_mode_btn.config(text='ROI MODE')
 
     def toggle_walk_to_opd(self):
         st = self._servo_state()
@@ -678,7 +680,7 @@ class Viewer(core.Worker):
         # ROI MODE (ROI/FF) transitions defined from RUNNING
         self._set_enabled(self.roi_mode_btn, st == ServoState.RUNNING)
 
-        # Reset ZPD only in TRACKING
+        # Reset ZPD only in OPEN LOOP
         self._set_enabled(self.reset_zpd_btn, st == ServoState.TRACKING)
 
         # Calibrate Velocity only in RUNNING

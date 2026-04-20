@@ -12,6 +12,8 @@ IRCAM_VIEWER_OUTPUT_TIME = 0.1 #s
 
 IRCAM_BUFFER_SIZE = 100
 IRCAM_LOST_THRESHOLD = CALIBRATION_LASER_WAVELENGTH / 2 * 0.8 # nm (80% of lambda/2 to be safe)
+IRCAM_MAX_FPS_ROI_MODE = 8000
+IRCAM_MAX_FPS_FF_MODE = 800
 
 FRAME_DTYPE = np.float32
 DATA_DTYPE = np.float32
@@ -35,17 +37,23 @@ PIEZO_V_MAX = 9.95
 OPD_TOLERANCE = 5.0  # nm
 PIEZO_MAX_OPD_DIFF = 5000 # nm
 
+
+SERVO_CPU_VIEWER = 1
+SERVO_CPU_DEFAULT = 0
+SERVO_CPU_IRCAM = 2
+
 SERVO_BUFFER_SIZE = 20 # for servo values buffering: servo updates are based on mean of this buffer
 SERVO_NORMALIZE_REC_TIME = 1.0 # s, time to record values for normalization coeffs computation
 SERVO_NORMALIZE_REC_SIZE = 10000 # s, time to record values for normalization coeffs computation
 VIEWER_BUFFER_SIZE = 1000 # for viewer servo values buffering
 SERVO_DEFAULT_NICENESS = 0
 SERVO_MAX_NICENESS = -20
-SERVO_LOW_NICENESS = 10
+SERVO_LOW_NICENESS = 15
 SERVO_OPD_TIMEOUT = 5.0 # s
 SERVO_NONCRITIC_REFRESH_TIME = 1 # s, time to refresh servo config (PID coeffs, etc.)
 
 VIEWER_ELLIPSE_DRAW_BUFFER_SIZE = 100
+
 
 DEFAULT_PROFILE_LEN = MIN_ROI_SHAPE
 DEFAULT_PROFILE_WIDTH = 4
@@ -85,6 +93,7 @@ NEXLINE_EVENTS = (
 TRACKER_EVENTS = (
     'start_recording',
     'stop_recording',
+    'normalize',
     )
 
 # use only this part of the profiles for normalization coeffs computation

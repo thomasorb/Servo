@@ -240,6 +240,7 @@ class MainTab:
         self.canvas.coords(self.cross_v, event.x, 0, event.x, self.canvas.winfo_height())
 
     def _on_left_press(self, event):
+        if self._roi_mode: return
         self._normal_click_start = (event.x, event.y)
 
     def _on_left_drag(self, event):
@@ -259,6 +260,7 @@ class MainTab:
         if self._roi_mode:
             return
         ix, iy = self.canvas_to_image(event.x, event.y)
+        ix, iy = np.floor(ix//4) * 4, np.floor(iy//4) * 4 # align to 4x4 grid
         if 0 <= ix < self.img_w and 0 <= iy < self.img_h:
             self.add_marker(ix, iy)
             try:
