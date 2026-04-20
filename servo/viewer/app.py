@@ -740,12 +740,12 @@ class Viewer(core.Worker):
         # roi
         try:
             n = int(self.data['IRCamera.profile_len'][0])
-            raw = self.data['IRCamera.roi'][:n**2]
-            new_frame = np.array(raw).reshape(self.roi_shape).T
             if self.show_normalized:
-                raw_min = np.array(self.data['Servo.roinorm_min'][:n**2]).reshape(self.roi_shape).T
-                raw_max = np.array(self.data['Servo.roinorm_max'][:n**2]).reshape(self.roi_shape).T
-                new_frame = np.clip((new_frame - raw_min) / (raw_max - raw_min), 0, 1)
+                raw = self.data['IRCamera.roi_normalized'][:n**2]
+            else:
+                raw = self.data['IRCamera.roi'][:n**2]
+            new_frame = np.array(raw).reshape(self.roi_shape).T
+            
             self.roi_image = new_frame
             
             # draw ROI thumbnail

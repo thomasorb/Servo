@@ -11,7 +11,7 @@ from . import core
 from . import config
 from . import utils
 
-from .faster import fast_copy_transpose, compute_profiles_local_f32, batch_normalize_and_levels
+from .faster import fast_copy_transpose, compute_profiles_local_f32, batch_normalize_and_levels, extract_roi_local_f32, batch_compute_levels_f32
 
 log = logging.getLogger(__name__)
 
@@ -179,6 +179,7 @@ class DataObserver(NITLibrary.NITUserObserver):
         # Cache shared buffers for fast access (1 lookup per name)
         self.arr_last_frame = self.data['IRCamera.last_frame']
         self.arr_roi        = self.data['IRCamera.roi']
+        self.arr_roi_normalized = self.data['IRCamera.roi_normalized']
         self.arr_hprofile   = self.data['IRCamera.hprofile']
         self.arr_vprofile   = self.data['IRCamera.vprofile']
         self.arr_hprof_norm = self.data['IRCamera.hprofile_normalized']
@@ -195,10 +196,9 @@ class DataObserver(NITLibrary.NITUserObserver):
         self.arr_full_output = self.data['IRCamera.full_output']
         
         # Servo coeffs
-        self.arr_hnorm_min  = self.data['Servo.hnorm_min']
-        self.arr_hnorm_max  = self.data['Servo.hnorm_max']
-        self.arr_vnorm_min  = self.data['Servo.vnorm_min']
-        self.arr_vnorm_max  = self.data['Servo.vnorm_max']
+        self.arr_roinorm_min  = self.data['Servo.roinorm_min']
+        self.arr_roinorm_max  = self.data['Servo.roinorm_max']
+        
         self.arr_xpix_states= self.data['Servo.pixels_x']
         self.arr_ypix_states= self.data['Servo.pixels_y']
         self.arr_hellipse   = self.data['Servo.hellipse_norm_coeffs']
@@ -234,9 +234,17 @@ class DataObserver(NITLibrary.NITUserObserver):
         self.iwid = None
 
         self.last_id = -1
+        self.normalization_coeffs_tag = self._get_normalization_coeffs_tag()
+        self.roinorm_min = None
+        self.roinorm_max = None
 
         gc.freeze()
         gc.disable()
+
+
+    def _get_normalization_coeffs_tag(self):
+        return self.data['Servo.roinorm_min'][:config.TRACKER_TAG_SIZE].copy()
+        
 
     def onNewFrame(self, frame):
         try:
@@ -296,6 +304,19 @@ class DataObserver(NITLibrary.NITUserObserver):
                     self.profile_len = int(np.min(self.frame_shape))
                 self.iwid = int(self.data['params.PROFILE_WIDTH'][0])
 
+                # reload normalization coefficients if changed (check tag)
+                if (np.any(self._get_normalization_coeffs_tag() != self.normalization_coeffs_tag)
+                    or self.roinorm_min is None
+                    or self.roinorm_max is None):
+                    log.warning('Normalization coefficients changed. Reinitializing IR image buffers.')
+            
+                    self.roinorm_min = np.array(self.data['Servo.roinorm_min'][:self.profile_len**2]).reshape(
+                        (self.profile_len, self.profile_len))
+                    self.roinorm_max = np.array(self.data['Servo.roinorm_max'][:self.profile_len**2]).reshape(
+                        (self.profile_len, self.profile_len))
+                    self.roinorm_amp = self.roinorm_max - self.roinorm_min
+                    self.normalization_coeffs_tag = self._get_normalization_coeffs_tag()
+
                 
             if bool(self.arr_full_output[0]):
                 compute_servo_output = True
@@ -312,17 +333,23 @@ class DataObserver(NITLibrary.NITUserObserver):
             # correspond to (iy, ix) in the native space.
             #vprofile, hprofile, roi = utils.compute_profiles(
             #    frame_data, self.iy, self.ix, self.iwid, self.profile_len, get_roi=True)
-            vprofile, hprofile, roi = compute_profiles_local_f32(
+            roi = extract_roi_local_f32(
                 frame_data.astype(np.float32, copy=False),
-                int(self.iy), int(self.ix), int(self.iwid), int(self.profile_len), True)
+                int(self.iy), int(self.ix), int(self.profile_len))
 
+            
             
             # # --------- T2: normalization + levels + angles/opd ----------
                             
-            self.hmin = self.arr_hnorm_min[:self.profile_len]
-            self.hmax = self.arr_hnorm_max[:self.profile_len]
-            self.vmin = self.arr_vnorm_min[:self.profile_len]
-            self.vmax = self.arr_vnorm_max[:self.profile_len]
+            roi_norm = np.clip((roi - self.roinorm_min) / self.roinorm_amp, 0, 1)
+            vprofile_norm, hprofile_norm = compute_profiles_local_f32(
+                roi_norm.astype(np.float32, copy=False),
+                int(self.iy), int(self.ix), int(self.iwid), int(self.profile_len), False)
+            vprofile, hprofile = compute_profiles_local_f32(
+                roi.astype(np.float32, copy=False),
+                int(self.iy), int(self.ix), int(self.iwid), int(self.profile_len), False)
+
+
 
             if compute_servo_output:
 
@@ -341,19 +368,16 @@ class DataObserver(NITLibrary.NITUserObserver):
                     self.arr_vlev_pos[:3] = self.ypixels_list_pos
 
                 # Normalized profiles (Numba kernels)
-                self.arr_hprof_norm[:self.profile_len] = utils.normalize_profile(
-                    hprofile, self.hmin, self.hmax, inplace=False)
-                self.arr_vprof_norm[:self.profile_len] = utils.normalize_profile(
-                    vprofile, self.vmin, self.vmax, inplace=False)
+                self.arr_hprof_norm[:self.profile_len] = hprofile_norm
+                self.arr_vprof_norm[:self.profile_len] = vprofile_norm
                 
             # Levels (3 positions per axis)
-            self.hlevels_ws[:] = batch_normalize_and_levels(
-                hprofile, self.hmin, self.hmax,
-                self.xpixels_list[0], self.xpixels_list[1], self.xpixels_list[2]
+            self.hlevels_ws[:] = batch_compute_levels_f32(
+                hprofile_norm, self.xpixels_list[0], self.xpixels_list[1], self.xpixels_list[2]
             )
-            self.vlevels_ws[:] = batch_normalize_and_levels(
-                vprofile, self.vmin, self.vmax,
-                self.ypixels_list[0], self.ypixels_list[1], self.ypixels_list[2]
+
+            self.vlevels_ws[:] = batch_compute_levels_f32(
+                vprofile_norm, self.ypixels_list[0], self.ypixels_list[1], self.ypixels_list[2]
             )
             
             # Angles & OPD
@@ -379,6 +403,7 @@ class DataObserver(NITLibrary.NITUserObserver):
                 self.arr_hprofile[:self.profile_len] = hprofile
                 self.arr_vprofile[:self.profile_len] = vprofile
                 self.arr_roi[:roi.size] = roi.ravel()
+                self.arr_roi_normalized[:roi_norm.size] = roi_norm.ravel()
 
                 # Levels & OPDs
                 self.arr_hlevels[:3] = self.hlevels_ws

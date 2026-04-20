@@ -449,12 +449,7 @@ class Servo(core.Worker):
         rec_vprofiles = np.array(rec_vprofiles)
         
         hnorm = utils.get_normalization_coeffs(rec_hprofiles).astype(config.FRAME_DTYPE)
-        self.data['Servo.hnorm_min'][:profile_len] = hnorm[:,0]
-        self.data['Servo.hnorm_max'][:profile_len] = hnorm[:,1]
-
         vnorm = utils.get_normalization_coeffs(rec_vprofiles).astype(config.FRAME_DTYPE)
-        self.data['Servo.vnorm_min'][:profile_len] = vnorm[:,0]
-        self.data['Servo.vnorm_max'][:profile_len] = vnorm[:,1]
 
         roinorm_min, roinorm_max = utils.get_roi_normalization_coeffs(
             np.array(rec_rois))

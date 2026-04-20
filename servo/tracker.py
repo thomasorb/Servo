@@ -112,22 +112,20 @@ class Record():
         ircube = self.ir_images[:self.position].copy()
         
         # recompute normalization maps
-        ix, iy = np.array(ircube.shape[1:])//2
-        profile_len = ircube.shape[1]
-        hprofiles = np.empty((ircube.shape[0], ircube.shape[1]), dtype=np.float32)
-        vprofiles = np.empty_like(hprofiles)
-        for iz, iframe in enumerate(ircube):
-            ivprof, ihprof, _ = faster.compute_profiles_local_f32(iframe.astype(np.float32, copy=False).T,
-                                                                  int(iy), int(ix), int(width),
-                                                                  int(profile_len), True)
-            hprofiles[iz, :] = ihprof.copy()
-            vprofiles[iz, :] = ivprof.copy()
+        # ix, iy = np.array(ircube.shape[1:])//2
+        # profile_len = ircube.shape[1]
+        # hprofiles = np.empty((ircube.shape[0], ircube.shape[1]), dtype=np.float32)
+        # vprofiles = np.empty_like(hprofiles)
+        # for iz, iframe in enumerate(ircube):
+        #     ivprof, ihprof, _ = faster.compute_profiles_local_f32(iframe.astype(np.float32, copy=False).T,
+        #                                                           int(iy), int(ix), int(width),
+        #                                                           int(profile_len), True)
+        #     hprofiles[iz, :] = ihprof.copy()
+        #     vprofiles[iz, :] = ivprof.copy()
 
-        hnorm = utils.get_normalization_coeffs(hprofiles)      
-        vnorm = utils.get_normalization_coeffs(vprofiles)
         roinorm_min, roinorm_max = utils.get_roi_normalization_coeffs(ircube)
 
-        return hnorm, vnorm, roinorm_min.T, roinorm_max.T
+        return roinorm_min.T, roinorm_max.T
         
         
 
@@ -186,22 +184,8 @@ class Tracker(core.Worker):
         self.profile_len = int(self.data['IRCamera.profile_len'][0])
         self.ir_image_size = self.profile_len**2
         self.ir_image_shape = (self.profile_len, self.profile_len)
-        self._init_normalization_coeffs()
 
-    def _get_normalization_coeffs_tag(self):
-        return self.data['Servo.roinorm_min'][:config.TRACKER_TAG_SIZE].copy()
         
-    def _init_normalization_coeffs(self):
-        try:
-            self.normalization_coeffs_tag = self._get_normalization_coeffs_tag()
-            self.raw_min = np.array(self.data['Servo.roinorm_min'][:self.ir_image_size]).reshape(
-                self.ir_image_shape).T
-            self.raw_max = np.array(self.data['Servo.roinorm_max'][:self.ir_image_size]).reshape(
-                self.ir_image_shape).T
-        except Exception as e:
-            log.error(f'Error initializing normalization coefficients: {e}\n{traceback.format_exc()}')
-            self.raw_min = np.zeros(self.ir_image_shape)
-            self.raw_max = np.ones(self.ir_image_shape)
 
 
     def _compute_stats(self, frequency):
@@ -244,19 +228,16 @@ class Tracker(core.Worker):
             ir_image = self.data['IRCamera.roi'][:self.ir_image_size].copy()
             ir_image = ir_image.reshape(self.ir_image_shape).T
 
+            ir_image_normalized = self.data['IRCamera.roi_normalized'][:self.ir_image_size].copy()
+            ir_image_normalized = ir_image_normalized.reshape(self.ir_image_shape).T
+
+
             # detect roi size change
             _profile_len = int(self.data['IRCamera.profile_len'][0])
             if _profile_len != self.profile_len:
                 log.warning(f'IR image size changed from {self.ir_image_size} to {_profile_len}. Reinitializing IR image buffers.')
                 self._init_ir_image_specs()
                 self.record._init_ir_images()
-
-            # check first five values of roinorm_min to detect a new normalization. Reinit if changed.
-            if np.any(self._get_normalization_coeffs_tag() != self.normalization_coeffs_tag):
-                log.warning('Normalization coefficients changed. Reinitializing IR image buffers.')
-                self._init_normalization_coeffs()
-
-            ir_image_normalized = (ir_image - self.raw_min) / (self.raw_max - self.raw_min)
 
             self.record.append(meanopd, meantip, meantilt, meantimestamp, velocity,
                                ir_image, ir_image_normalized)
@@ -281,16 +262,10 @@ class Tracker(core.Worker):
         log.info('Normalizing tracker data')
         width = int(self.data['params.PROFILE_WIDTH'][0])
         
-        hnorm, vnorm, roinorm_min, roinorm_max = self.record.get_normalization_coeffs(width)
+        roinorm_min, roinorm_max = self.record.get_normalization_coeffs(width)
         
-        self.data['Servo.hnorm_min'][:self.profile_len] = hnorm[:,0]
-        self.data['Servo.hnorm_max'][:self.profile_len] = hnorm[:,1]
-        self.data['Servo.vnorm_min'][:self.profile_len] = vnorm[:,0]
-        self.data['Servo.vnorm_max'][:self.profile_len] = vnorm[:,1]
         self.data['Servo.roinorm_min'][:self.profile_len**2] = roinorm_min.astype(config.FRAME_DTYPE).flatten()
         self.data['Servo.roinorm_max'][:self.profile_len**2] = roinorm_max.astype(config.FRAME_DTYPE).flatten()
-
-        self._init_normalization_coeffs()
         
         
     def loop_once(self):

@@ -245,6 +245,99 @@ static PyObject* py_compute_profiles_local_f32(
     else
         return Py_BuildValue("NN", vprof, hprof);
 }
+/* ============================================================
+  extract_roi_local_f32
+  ------------------------------------------------------------
+  Extracts a square ROI centered on (x, y) from a float32 2D image.
+
+  ROI definition:
+    rows: [x - hl : x + hl)
+    cols: [y - hl : y + hl)
+  where hl = l / 2
+
+  The ROI is clipped to the image boundaries.
+
+  Requirements:
+    - a must be a 2D float32 NumPy array
+    - l must be even
+
+  Returns:
+    - roi (float32 2D NumPy array)
+============================================================ */
+static PyObject* py_extract_roi_local_f32(
+    PyObject* self, PyObject* args)
+{
+    PyObject *a_obj = NULL;
+    int x, y, l;
+
+    if (!PyArg_ParseTuple(args, "Oiii", &a_obj, &x, &y, &l))
+        return NULL;
+
+    /* Convert input array to float32 contiguous */
+    PyArrayObject* a = (PyArrayObject*)PyArray_FROM_OTF(
+        a_obj, NPY_FLOAT32, NPY_ARRAY_C_CONTIGUOUS | NPY_ARRAY_ALIGNED);
+    if (!a)
+        return NULL;
+
+    if (PyArray_NDIM(a) != 2) {
+        Py_DECREF(a);
+        PyErr_SetString(PyExc_ValueError, "a must be a 2D float32 array");
+        return NULL;
+    }
+
+    if (l & 1) {
+        Py_DECREF(a);
+        PyErr_SetString(PyExc_ValueError, "l must be even");
+        return NULL;
+    }
+
+    npy_intp nrows = PyArray_DIM(a, 0);
+    npy_intp ncols = PyArray_DIM(a, 1);
+    float* A = (float*)PyArray_DATA(a);
+
+    int hl = l / 2;
+
+    /* Compute ROI bounds */
+    int r0 = x - hl;
+    int r1 = x + hl;
+    int c0 = y - hl;
+    int c1 = y + hl;
+
+    int rr0 = (r0 < 0) ? 0 : r0;
+    int rr1 = (r1 > (int)nrows) ? (int)nrows : r1;
+    int cc0 = (c0 < 0) ? 0 : c0;
+    int cc1 = (c1 > (int)ncols) ? (int)ncols : c1;
+
+    npy_intp rdims[2] = {
+        rr1 - rr0,
+        cc1 - cc0
+    };
+
+    PyArrayObject* roi =
+        (PyArrayObject*)PyArray_SimpleNew(2, rdims, NPY_FLOAT32);
+    if (!roi) {
+        Py_DECREF(a);
+        return NULL;
+    }
+
+    float* R = (float*)PyArray_DATA(roi);
+
+    /* Copy ROI data */
+    Py_BEGIN_ALLOW_THREADS
+    for (int r = 0; r < rdims[0]; ++r) {
+        const float* src =
+            A + ((npy_intp)(rr0 + r)) * ncols + cc0;
+        float* dst =
+            R + ((npy_intp)r) * rdims[1];
+        for (int c = 0; c < rdims[1]; ++c) {
+            dst[c] = src[c];
+        }
+    }
+    Py_END_ALLOW_THREADS
+
+    Py_DECREF(a);
+    return (PyObject*)roi;
+}
 
 
 /* ============================================================
@@ -370,6 +463,114 @@ static PyObject* py_batch_normalize_and_levels(
     return (PyObject*) out;
 }
 
+/* ============================================================
+  batch_compute_levels_f32
+  ------------------------------------------------------------
+  Computes simple mean levels over three pixel index lists
+  (left, center, right), without normalization or clamping.
+
+  For each group k:
+    output[k] = mean( a[ index_list_k[j] ] )
+
+  Requirements:
+    - a: float32 1D NumPy array
+    - left, center, right: int32 1D NumPy arrays
+  Returns:
+    - float32[3] NumPy array: [left_level, center_level, right_level]
+============================================================ */
+static PyObject* py_batch_compute_levels_f32(
+    PyObject* self, PyObject* args)
+{
+    PyObject *a_obj, *left_obj, *center_obj, *right_obj;
+
+    if (!PyArg_ParseTuple(
+            args, "OOOO",
+            &a_obj, &left_obj, &center_obj, &right_obj))
+        return NULL;
+
+    PyArrayObject *a =
+        (PyArrayObject*)PyArray_FROM_OTF(
+            a_obj, NPY_FLOAT32, NPY_ARRAY_C_CONTIGUOUS);
+    PyArrayObject *left =
+        (PyArrayObject*)PyArray_FROM_OTF(
+            left_obj, NPY_INT32, NPY_ARRAY_C_CONTIGUOUS);
+    PyArrayObject *center =
+        (PyArrayObject*)PyArray_FROM_OTF(
+            center_obj, NPY_INT32, NPY_ARRAY_C_CONTIGUOUS);
+    PyArrayObject *right =
+        (PyArrayObject*)PyArray_FROM_OTF(
+            right_obj, NPY_INT32, NPY_ARRAY_C_CONTIGUOUS);
+
+    if (!a || !left || !center || !right) {
+        Py_XDECREF(a);
+        Py_XDECREF(left);
+        Py_XDECREF(center);
+        Py_XDECREF(right);
+        return NULL;
+    }
+
+    /* Validate array shapes and dtypes */
+    if (!ensure_float32_1d(a) ||
+        !ensure_int32_1d(left) ||
+        !ensure_int32_1d(center) ||
+        !ensure_int32_1d(right))
+    {
+        Py_DECREF(a);
+        Py_DECREF(left);
+        Py_DECREF(center);
+        Py_DECREF(right);
+        PyErr_SetString(PyExc_ValueError,
+                        "Invalid array shapes or dtypes");
+        return NULL;
+    }
+
+    float *A = (float*)PyArray_DATA(a);
+    int *L = (int*)PyArray_DATA(left);
+    int *C = (int*)PyArray_DATA(center);
+    int *R = (int*)PyArray_DATA(right);
+
+    npy_intp nL = PyArray_DIM(left, 0);
+    npy_intp nC = PyArray_DIM(center, 0);
+    npy_intp nR = PyArray_DIM(right, 0);
+
+    npy_intp odims[1] = {3};
+    PyArrayObject* out =
+        (PyArrayObject*)PyArray_SimpleNew(1, odims, NPY_FLOAT32);
+    if (!out) {
+        Py_DECREF(a);
+        Py_DECREF(left);
+        Py_DECREF(center);
+        Py_DECREF(right);
+        return NULL;
+    }
+
+    float* O = (float*)PyArray_DATA(out);
+
+    Py_BEGIN_ALLOW_THREADS
+    for (int k = 0; k < 3; ++k) {
+        int* IDX = (k == 0 ? L : (k == 1 ? C : R));
+        npy_intp n = (k == 0 ? nL : (k == 1 ? nC : nR));
+
+        if (n == 0) {
+            O[k] = 0.0f;
+            continue;
+        }
+
+        double acc = 0.0;
+        for (npy_intp j = 0; j < n; ++j) {
+            acc += (double)A[IDX[j]];
+        }
+        O[k] = (float)(acc / (double)n);
+    }
+    Py_END_ALLOW_THREADS
+
+    Py_DECREF(a);
+    Py_DECREF(left);
+    Py_DECREF(center);
+    Py_DECREF(right);
+
+    return (PyObject*)out;
+}
 
 /* ============================================================
    3) fast_copy_transpose
@@ -458,6 +659,15 @@ static PyMethodDef Methods[] = {
     {"fast_copy_transpose",
         py_fast_copy_transpose, METH_VARARGS,
         "Copy a.T.ravel() into an existing float32 1D buffer"},
+
+    {"extract_roi_local_f32",
+     py_extract_roi_local_f32, METH_VARARGS,
+     "Extract a square ROI centered at (x, y) from a float32 2D image"},
+
+    {"batch_compute_levels_f32",
+     py_batch_compute_levels_f32,
+     METH_VARARGS,
+     "Compute mean levels over left/center/right index lists (no normalization)"},
 
     {NULL, NULL, 0, NULL}
 };
