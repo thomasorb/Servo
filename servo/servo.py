@@ -130,8 +130,8 @@ class Servo(core.Worker):
                 ServoState.RUNNING, action=self._roi_mode),
             (ServoState.RUNNING, self.Event.FULL_FRAME_MODE): Transition(
                 ServoState.RUNNING, action=self._full_frame_mode),
-            (ServoState.TRACKING, self.Event.RESET_ZPD): Transition(
-                ServoState.TRACKING, action=self._reset_zpd),
+            (ServoState.RUNNING, self.Event.RESET_ZPD): Transition(
+                ServoState.RUNNING, action=self._reset_zpd),
             (ServoState.TRACKING, self.Event.WALK_TO_OPD): Transition(
                 ServoState.WALKING, action=self._walk_to_opd),
             (ServoState.WALKING, self.Event.STOP_WALKING): Transition(
@@ -166,7 +166,9 @@ class Servo(core.Worker):
 
     def get_pid_control(self, name,
                         out_min=config.PIEZO_V_MIN,
-                        out_max=config.PIEZO_V_MAX):
+                        out_max=config.PIEZO_V_MAX,
+                        deadband=0.0,
+                        kaw=5.0):
         
         dt = config.OPD_LOOP_TIME
 
@@ -176,7 +178,7 @@ class Servo(core.Worker):
             dt=dt,
             out_min=out_min,
             out_max=out_max,
-            deriv_filter_hz=1/dt/1000., kaw=5.0, deadband=0.0
+            deriv_filter_hz=1/dt/1000., kaw=kaw, deadband=deadband
         )
         
         return pid_control
@@ -241,8 +243,8 @@ class Servo(core.Worker):
                     last_update_time = time.time()
                         
                 opd = self.data['Tracker.opd_100'][0]
-                tip = self.data['Tracker.tip_30'][0]
-                tilt = self.data['Tracker.tilt_30'][0]
+                tip = self.data['Tracker.tip_0.1'][0]
+                tilt = self.data['Tracker.tilt_0.1'][0]
 
                 if not np.isnan(opd):
                     u_pid_opd = pid_opd_control.update(
@@ -453,6 +455,11 @@ class Servo(core.Worker):
 
         roinorm_min, roinorm_max = utils.get_roi_normalization_coeffs(
             np.array(rec_rois))
+
+        high_values = np.nanpercentile(roinorm_max, 99)
+        if  high_values > 0.75:
+            log.warning("High ROI normalization max value detected, may cause saturation: 99th percentile={:.3f}".format(high_values))
+            
         self.data['Servo.roinorm_min'][:profile_len**2] = roinorm_min.astype(config.FRAME_DTYPE).flatten()
         self.data['Servo.roinorm_max'][:profile_len**2] = roinorm_max.astype(config.FRAME_DTYPE).flatten()
 
@@ -555,9 +562,13 @@ class Servo(core.Worker):
         da2_max = da2_level_orig + max_v_diff
 
         pid_da1_control = self.get_pid_control(
-            'TRACK_DA1', out_min=da1_min, out_max=da1_max)
+            'TRACK_DA1', out_min=da1_min, out_max=da1_max,
+            deadband=self.data['params.PID_DA_DEADBAND'],
+            kaw=self.data['params.PID_DA_KAW'])
         pid_da2_control = self.get_pid_control(
-            'TRACK_DA2', out_min=da2_min, out_max=da2_max)
+            'TRACK_DA2', out_min=da2_min, out_max=da2_max,
+            deadband=self.data['params.PID_DA_DEADBAND'],
+            kaw=self.data['params.PID_DA_KAW'])
         
         # check if piezos are in a correct range
         if not (4 < self.data['DAQ.piezos_level'][0] < 6):
@@ -600,8 +611,8 @@ class Servo(core.Worker):
                     loop_startt = time.perf_counter()
 
                     opd = float(self.data['Tracker.opd_100'][0]) # nm
-                    tip = float(self.data['Tracker.tip_30'][0]) 
-                    tilt = float(self.data['Tracker.tilt_30'][0])
+                    tip = float(self.data['Tracker.tip_0.1'][0]) 
+                    tilt = float(self.data['Tracker.tilt_0.1'][0])
 
                     nexline_is_moving = NexlineState(int(self.data['Nexline.state'])).name == 'MOVING'
                     if time.perf_counter() - step_startt > 0.5: # wait for event dispatch
@@ -652,8 +663,12 @@ class Servo(core.Worker):
                         da2_min = da2_level_orig - max_v_diff
                         da2_max = da2_level_orig + max_v_diff
 
-                        pid_da1_control.update_config(out_min=da1_min, out_max=da1_max)
-                        pid_da2_control.update_config(out_min=da2_min, out_max=da2_max)
+                        pid_da1_control.update_config(out_min=da1_min, out_max=da1_max,
+                                                      deadband=self.data['params.PID_DA_DEADBAND'],
+                                                      kaw=self.data['params.PID_DA_KAW'])
+                        pid_da2_control.update_config(out_min=da2_min, out_max=da2_max,
+                                                      deadband=self.data['params.PID_DA_DEADBAND'],
+                                                      kaw=self.data['params.PID_DA_KAW'])
 
                         refresh_startt = time.perf_counter()
 

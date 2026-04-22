@@ -237,6 +237,9 @@ class DataObserver(NITLibrary.NITUserObserver):
         self.normalization_coeffs_tag = self._get_normalization_coeffs_tag()
         self.roinorm_min = None
         self.roinorm_max = None
+        self.roinorm_amp = None
+        self.roinorm_mean = None
+        self.roinorm_mask = None
 
         gc.freeze()
         gc.disable()
@@ -276,7 +279,8 @@ class DataObserver(NITLibrary.NITUserObserver):
             frame_data = frame.data()  # native order, no transpose
     
             # --------- T0: viewer copy (and potential resize) ----------                
-            if frame_time - self.last_viewer_out_time > config.IRCAM_VIEWER_OUTPUT_TIME:
+            if ((frame_time - self.last_viewer_out_time > config.IRCAM_VIEWER_OUTPUT_TIME)
+                or (self.roinorm_min is None) or (self.roinorm_max is None)):
                 self.last_viewer_out_time = frame_time
 
                 # Ensure last_frame has correct size 
@@ -300,14 +304,16 @@ class DataObserver(NITLibrary.NITUserObserver):
                     self.ix = self.data['IRCamera.profile_x'][0] - self.frame_position[0]
                     self.iy = self.data['IRCamera.profile_y'][0] - self.frame_position[1]
                     self.profile_len = int(self.data['IRCamera.profile_len'][0])
+                
                 if self.profile_len > np.min(self.frame_shape):
                     self.profile_len = int(np.min(self.frame_shape))
                 self.iwid = int(self.data['params.PROFILE_WIDTH'][0])
 
                 # reload normalization coefficients if changed (check tag)
-                if (np.any(self._get_normalization_coeffs_tag() != self.normalization_coeffs_tag)
-                    or self.roinorm_min is None
-                    or self.roinorm_max is None):
+                if ((np.any(self._get_normalization_coeffs_tag() != self.normalization_coeffs_tag))
+                    or (self.roinorm_min is None)
+                    or (self.roinorm_max is None)
+                    or (self.roinorm_amp is None)):
                     log.warning('Normalization coefficients changed. Reinitializing IR image buffers.')
             
                     self.roinorm_min = np.array(self.data['Servo.roinorm_min'][:self.profile_len**2]).reshape(
@@ -315,6 +321,7 @@ class DataObserver(NITLibrary.NITUserObserver):
                     self.roinorm_max = np.array(self.data['Servo.roinorm_max'][:self.profile_len**2]).reshape(
                         (self.profile_len, self.profile_len))
                     self.roinorm_amp = self.roinorm_max - self.roinorm_min
+                    
                     self.normalization_coeffs_tag = self._get_normalization_coeffs_tag()
 
                 
@@ -341,30 +348,49 @@ class DataObserver(NITLibrary.NITUserObserver):
             
             # # --------- T2: normalization + levels + angles/opd ----------
                             
-            roi_norm = np.clip((roi - self.roinorm_min) / self.roinorm_amp, 0, 1)
+            roi_norm = np.clip((roi - self.roinorm_min) / (self.roinorm_amp + 1e-8), 0, 1)
+                
+            ix_profile = self.profile_len//2 + int(self.data['IRCamera.profile_h_shift'][0])
+            iy_profile = self.profile_len//2 + int(self.data['IRCamera.profile_v_shift'][0])
+
+            mask = self.roinorm_max.astype(np.float32, copy=False) if self.roinorm_max is not None else None
             vprofile_norm, hprofile_norm = compute_profiles_local_f32(
                 roi_norm.astype(np.float32, copy=False),
-                int(self.iy), int(self.ix), int(self.iwid), int(self.profile_len), False)
+                int(iy_profile), int(ix_profile), int(self.iwid), int(self.profile_len), get_roi=False, mask=mask)
             vprofile, hprofile = compute_profiles_local_f32(
                 roi.astype(np.float32, copy=False),
-                int(self.iy), int(self.ix), int(self.iwid), int(self.profile_len), False)
-
-
-
+                int(iy_profile), int(ix_profile), int(self.iwid), int(self.profile_len), get_roi=False, mask=mask)
+            
             if compute_servo_output:
 
                 # Refresh pixel lists when states change
                 x_states = self.arr_xpix_states
                 y_states = self.arr_ypix_states
+            
                 if self.x_pixels_states is None or not np.array_equal(self.x_pixels_states, x_states):
                     self.x_pixels_states = np.copy(x_states)
-                    self.xpixels_list = utils.get_pixels_lists(x_states)
-                    self.xpixels_list_pos = utils.get_mean_pixels_positions(self.xpixels_list)
+                    try:
+                        xpixels_list = utils.get_pixels_lists(x_states)
+                        xpixels_list_pos = utils.get_mean_pixels_positions(xpixels_list)
+                    except Exception as e:
+                        log.error(f'error computing x pixels lists: {e}')
+                    else:
+                        self.xpixels_list = xpixels_list
+                        self.xpixels_list_pos = xpixels_list_pos
+                    
                     self.arr_hlev_pos[:3] = self.xpixels_list_pos
+                    
                 if self.y_pixels_states is None or not np.array_equal(self.y_pixels_states, y_states):
                     self.y_pixels_states = np.copy(y_states)
-                    self.ypixels_list = utils.get_pixels_lists(y_states)
-                    self.ypixels_list_pos = utils.get_mean_pixels_positions(self.ypixels_list)
+                    try:
+                        ypixels_list = utils.get_pixels_lists(y_states)
+                        ypixels_list_pos = utils.get_mean_pixels_positions(ypixels_list)
+                    except Exception as e:
+                        log.error(f'error computing y pixels lists: {e}')
+                    else:
+                        self.ypixels_list = ypixels_list
+                        self.ypixels_list_pos = ypixels_list_pos
+                        
                     self.arr_vlev_pos[:3] = self.ypixels_list_pos
 
                 # Normalized profiles (Numba kernels)
@@ -384,18 +410,21 @@ class DataObserver(NITLibrary.NITUserObserver):
             self.angles_ws[:2] = utils.compute_angles(self.hlevels_ws, self.arr_hellipse[:4],
                                                       self.arr_last_angles[:2])
             self.angles_ws[2:] = utils.compute_angles(self.vlevels_ws, self.arr_vellipse[:4],
-                                                      self.arr_last_angles[2:])
+                                                      self.arr_last_angles[2:])                
+                
             opds = utils.compute_opds(self.angles_ws)
             opds -= self.arr_mean_opd_offset[0]
             mean_opd = utils.mean(opds)
 
             # check for lost
-            if self.last_mean_opd is not None:
+            if self.last_mean_opd is not None and np.isfinite(mean_opd):
                 if abs(mean_opd - self.last_mean_opd) > config.IRCAM_LOST_THRESHOLD:
                     log.warning(f'potential lost detected: mean OPD jump from {self.last_mean_opd:.2f} nm to {mean_opd:.2f} nm')
                     self.data['Servo.is_lost'][0] = float(True)
-            self.last_mean_opd = float(mean_opd)
-                        
+
+            if np.isfinite(mean_opd):
+                self.last_mean_opd = float(mean_opd)
+                
             
             if compute_servo_output:
                 
@@ -424,7 +453,9 @@ class DataObserver(NITLibrary.NITUserObserver):
             
             
         except Exception as e:
-            log.error(f'error on new frame: {e}')
+            log.error(f'error on new frame: {e}, traceback: {traceback.format_exc()}')
+            
+            
 
         
     

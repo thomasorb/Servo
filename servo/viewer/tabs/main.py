@@ -344,8 +344,8 @@ class MainTab:
                 ax.axhline(v, c='0.8' if v in (0,1) else '0.5')
             canvas.draw()
 
-        draw(self.fig_h, self.ax_h, self.canvas_h, horiz, 'h profile', hlevels, hpos)
-        draw(self.fig_v, self.ax_v, self.canvas_v, vert,  'v profile', vlevels, vpos)
+        draw(self.fig_h, self.ax_h, self.canvas_h, horiz, 'V profile', hlevels, hpos)
+        draw(self.fig_v, self.ax_v, self.canvas_v, vert,  'H profile', vlevels, vpos)
         self.hlevels_buf.appendleft(np.copy(hlevels))
         self.vlevels_buf.appendleft(np.copy(vlevels))
         draw_ellipse(self.fig_ellx, self.ax_ellx, self.canvas_ellx, self.hlevels_buf)

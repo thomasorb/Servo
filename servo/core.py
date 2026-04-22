@@ -173,6 +173,9 @@ class SharedData(object):
         self.add_value('IRCamera.state', float(0), stored=False)
         self.add_value('IRCamera.full_output', float(0), stored=False)
 
+        self.add_value('IRCamera.profile_h_shift', int(0), stored=True)
+        self.add_value('IRCamera.profile_v_shift', int(0), stored=True)
+
         # selected pixels: 0:none, 1:side, 2:center
         self.add_value('Servo.state', float(0), stored=False)
         
@@ -234,13 +237,14 @@ class SharedData(object):
         self.add_value('Tracker.is_recording', False, stored=False)
         self.add_value('Tracker.is_rt_normalizing', False, stored=False)
         self.add_value('Tracker.frequency', float(np.nan), stored=False)
-        frequencies = [int(ifreq) for ifreq in config.TRACKER_STATS_FREQUENCIES]
+        frequencies = [ifreq for ifreq in config.TRACKER_STATS_FREQUENCIES]
         for ifreq in frequencies:
-            self.add_value(f'Tracker.opd_{ifreq}', float(np.nan), stored=False)
-            self.add_value(f'Tracker.tip_{ifreq}', float(np.nan), stored=False)
-            self.add_value(f'Tracker.tilt_{ifreq}', float(np.nan), stored=False)
-            self.add_value(f'Tracker.opd_std_{ifreq}', float(np.nan), stored=False)
-            self.add_value(f'Tracker.velocity_{ifreq}', float(np.nan), stored=False)
+            ifreq_str = f"{int(ifreq)}" if ifreq % 1 == 0 else f"{ifreq:.1f}"
+            self.add_value(f'Tracker.opd_{ifreq_str}', float(np.nan), stored=False)
+            self.add_value(f'Tracker.tip_{ifreq_str}', float(np.nan), stored=False)
+            self.add_value(f'Tracker.tilt_{ifreq_str}', float(np.nan), stored=False)
+            self.add_value(f'Tracker.opd_std_{ifreq_str}', float(np.nan), stored=False)
+            self.add_value(f'Tracker.velocity_{ifreq_str}', float(np.nan), stored=False)
 
         # FIR metrics
         self.add_value('FIR.short.tracking.e_opd', float(0), stored=False)

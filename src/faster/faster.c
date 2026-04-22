@@ -2,7 +2,7 @@
 #include <Python.h>
 #include <numpy/arrayobject.h>
 #include <numpy/npy_math.h>
-
+#include <string.h>
 /* ============================================================
    Helper macros
    ============================================================ */
@@ -68,7 +68,6 @@ static void replace_nan_with_min_f32(PyArrayObject *profile)
     for (npy_intp i = 0; i < n; ++i) {
       if (is_nan_f32(data[i])) {
             data[i] = min_val;
-	    printf("NaN détecté à l'indice %ld\n", i);
         }
     }
 }
@@ -100,19 +99,21 @@ static PyObject* py_compute_profiles_local_f32(
     PyObject* self, PyObject* args, PyObject* kwargs)
 {
     PyObject *a_obj = NULL;
+    PyObject *mask_obj = Py_None; /* optional weights map */
     int x, y, w, l;
     int get_roi = 1;
 
-    static char* kwlist[] = {"a","x","y","w","l","get_roi",NULL};
+    /* mask is optional and must be passed as keyword (or as last positional) */
+    static char* kwlist[] = {"a","x","y","w","l","get_roi","mask",NULL};
 
     if (!PyArg_ParseTupleAndKeywords(
-            args, kwargs, "Oiiii|p",
-            kwlist, &a_obj, &x, &y, &w, &l, &get_roi))
+            args, kwargs, "Oiiiip|O",
+            kwlist, &a_obj, &x, &y, &w, &l, &get_roi, &mask_obj))
         return NULL;
 
-    /* Convert to float32 contiguous if needed */
+    /* Convert input image to float32 contiguous */
     PyArrayObject* a = (PyArrayObject*)PyArray_FROM_OTF(
-        a_obj, NPY_FLOAT32, NPY_ARRAY_C_CONTIGUOUS|NPY_ARRAY_ALIGNED);
+        a_obj, NPY_FLOAT32, NPY_ARRAY_C_CONTIGUOUS | NPY_ARRAY_ALIGNED);
     if (!a) return NULL;
 
     if (PyArray_NDIM(a) != 2) {
@@ -121,8 +122,8 @@ static PyObject* py_compute_profiles_local_f32(
         return NULL;
     }
 
-    npy_intp nrows = PyArray_DIM(a,0);
-    npy_intp ncols = PyArray_DIM(a,1);
+    npy_intp nrows = PyArray_DIM(a, 0);
+    npy_intp ncols = PyArray_DIM(a, 1);
     float* A = (float*)PyArray_DATA(a);
 
     if ((w & 1) || (l & 1)) {
@@ -131,20 +132,45 @@ static PyObject* py_compute_profiles_local_f32(
         return NULL;
     }
 
-    int hw = w/2;
-    int hl = l/2;
+    int hw = w / 2;
+    int hl = l / 2;
+
+    /* Optional weight map (mask): float32 2D contiguous, same shape as a */
+    PyArrayObject* mask = NULL;
+    float* W = NULL;
+
+    if (mask_obj != Py_None) {
+        mask = (PyArrayObject*)PyArray_FROM_OTF(
+            mask_obj, NPY_FLOAT32, NPY_ARRAY_C_CONTIGUOUS | NPY_ARRAY_ALIGNED);
+        if (!mask) {
+            Py_DECREF(a);
+            return NULL;
+        }
+        if (PyArray_NDIM(mask) != 2) {
+            Py_DECREF(a);
+            Py_DECREF(mask);
+            PyErr_SetString(PyExc_ValueError, "mask must be a 2D float32 array (weights)");
+            return NULL;
+        }
+        if (PyArray_DIM(mask,0) != nrows || PyArray_DIM(mask,1) != ncols) {
+            Py_DECREF(a);
+            Py_DECREF(mask);
+            PyErr_SetString(PyExc_ValueError, "mask must have the same shape as a");
+            return NULL;
+        }
+        W = (float*)PyArray_DATA(mask);
+    }
 
     /* Allocate output profiles */
-    npy_intp dims[1] = {l};
-    PyArrayObject* hprof =
-        (PyArrayObject*)PyArray_SimpleNew(1, dims, NPY_FLOAT32);
-    PyArrayObject* vprof =
-        (PyArrayObject*)PyArray_SimpleNew(1, dims, NPY_FLOAT32);
+    npy_intp dims[1] = { (npy_intp)l };
+    PyArrayObject* hprof = (PyArrayObject*)PyArray_SimpleNew(1, dims, NPY_FLOAT32);
+    PyArrayObject* vprof = (PyArrayObject*)PyArray_SimpleNew(1, dims, NPY_FLOAT32);
 
     if (!hprof || !vprof) {
         Py_XDECREF(hprof);
         Py_XDECREF(vprof);
         Py_DECREF(a);
+        Py_XDECREF(mask);
         return NULL;
     }
 
@@ -164,7 +190,6 @@ static PyObject* py_compute_profiles_local_f32(
 
     /* ---- Compute profiles ---- */
     Py_BEGIN_ALLOW_THREADS
-
     for (int i = 0; i < l; ++i) {
 
         /* -------- Horizontal profile -------- */
@@ -177,10 +202,37 @@ static PyObject* py_compute_profiles_local_f32(
             if (width <= 0) {
                 HP[i] = NPY_NAN;
             } else {
-                const float* row = A + ((npy_intp)r) * ncols;
-                float sum = 0.0f;
-                for (int c = c0i; c < c1i; ++c) sum += row[c];
-                HP[i] = sum / (float) width;
+                npy_intp base = (npy_intp)r * ncols;
+                const float* row = A + base;
+
+                double acc = 0.0;
+                double wsum = 0.0;
+
+                /* Weighted mean:
+                   - if mask/weights provided: use w = W[idx]
+                   - ignore pixels with w == 0
+                   - ignore NaNs in v or w
+                   - result = acc / wsum, and if wsum == 0 -> NaN
+                */
+                for (int c = c0i; c < c1i; ++c) {
+                    npy_intp idx = base + (npy_intp)c;
+
+                    float v = row[c];
+                    if (is_nan_f32(v))
+                        continue;
+
+                    float wt = 1.0f;
+                    if (W) {
+                        wt = W[idx];
+                        if (is_nan_f32(wt) || wt == 0.0f)
+                            continue;
+                    }
+
+                    acc  += (double)v * (double)wt;
+                    wsum += (double)wt;
+                }
+
+                HP[i] = (wsum != 0.0) ? (float)(acc / wsum) : (float)NPY_NAN;
             }
         } else {
             HP[i] = NPY_NAN;
@@ -196,50 +248,65 @@ static PyObject* py_compute_profiles_local_f32(
             if (height <= 0) {
                 VP[i] = NPY_NAN;
             } else {
-                float sum = 0.0f;
-                for (int r2 = r0i; r2 < r1i; ++r2)
-                    sum += A[((npy_intp)r2) * ncols + c];
-                VP[i] = sum / (float) height;
+                double acc = 0.0;
+                double wsum = 0.0;
+
+                for (int r2 = r0i; r2 < r1i; ++r2) {
+                    npy_intp idx = ((npy_intp)r2) * ncols + (npy_intp)c;
+
+                    float v = A[idx];
+                    if (is_nan_f32(v))
+                        continue;
+
+                    float wt = 1.0f;
+                    if (W) {
+                        wt = W[idx];
+                        if (is_nan_f32(wt) || wt == 0.0f)
+                            continue;
+                    }
+
+                    acc  += (double)v * (double)wt;
+                    wsum += (double)wt;
+                }
+
+                VP[i] = (wsum != 0.0) ? (float)(acc / wsum) : (float)NPY_NAN;
             }
         } else {
             VP[i] = NPY_NAN;
         }
     }
-
     Py_END_ALLOW_THREADS
 
-    replace_nan_with_min_f32(hprof);
-    replace_nan_with_min_f32(vprof);
-    
+    /* NOTE: We intentionally keep NaNs in the output profiles. */
 
     /* ---- Build ROI (if requested) ---- */
     PyArrayObject* roi = NULL;
-
     if (get_roi) {
-        npy_intp rdims[2] = { rr1 - rr0, cc1 - cc0 };
+        npy_intp rdims[2] = { (npy_intp)(rr1 - rr0), (npy_intp)(cc1 - cc0) };
         roi = (PyArrayObject*)PyArray_SimpleNew(2, rdims, NPY_FLOAT32);
         if (!roi) {
             Py_DECREF(a);
             Py_DECREF(hprof);
             Py_DECREF(vprof);
+            Py_XDECREF(mask);
             return NULL;
         }
 
         float* R = (float*)PyArray_DATA(roi);
 
         Py_BEGIN_ALLOW_THREADS
-        for (int r = 0; r < (rr1 - rr0); ++r) {
-            const float* src =
-                A + ((npy_intp)(rr0 + r)) * ncols + cc0;
-            float* dst = R + ((npy_intp)r) * (cc1 - cc0);
-            for (int c = 0; c < (cc1 - cc0); ++c)
-                dst[c] = src[c];
+        for (int rr = 0; rr < (rr1 - rr0); ++rr) {
+            const float* src = A + ((npy_intp)(rr0 + rr)) * ncols + cc0;
+            float* dst = R + ((npy_intp)rr) * (cc1 - cc0);
+            for (int cc = 0; cc < (cc1 - cc0); ++cc)
+                dst[cc] = src[cc];
         }
         Py_END_ALLOW_THREADS
     }
 
     Py_DECREF(a);
-    
+    Py_XDECREF(mask);
+
     if (get_roi)
         return Py_BuildValue("NNN", vprof, hprof, roi);
     else
@@ -482,7 +549,6 @@ static PyObject* py_batch_compute_levels_f32(
     PyObject* self, PyObject* args)
 {
     PyObject *a_obj, *left_obj, *center_obj, *right_obj;
-
     if (!PyArg_ParseTuple(
             args, "OOOO",
             &a_obj, &left_obj, &center_obj, &right_obj))
@@ -525,9 +591,9 @@ static PyObject* py_batch_compute_levels_f32(
     }
 
     float *A = (float*)PyArray_DATA(a);
-    int *L = (int*)PyArray_DATA(left);
-    int *C = (int*)PyArray_DATA(center);
-    int *R = (int*)PyArray_DATA(right);
+    int   *L = (int*)PyArray_DATA(left);
+    int   *C = (int*)PyArray_DATA(center);
+    int   *R = (int*)PyArray_DATA(right);
 
     npy_intp nL = PyArray_DIM(left, 0);
     npy_intp nC = PyArray_DIM(center, 0);
@@ -551,16 +617,23 @@ static PyObject* py_batch_compute_levels_f32(
         int* IDX = (k == 0 ? L : (k == 1 ? C : R));
         npy_intp n = (k == 0 ? nL : (k == 1 ? nC : nR));
 
-        if (n == 0) {
-            O[k] = 0.0f;
-            continue;
+        /* NaN-tolerant mean:
+           - ignore NaNs in A[IDX[j]]
+           - divide by number of valid samples
+           - if no valid sample -> NaN
+        */
+        double acc = 0.0;
+        npy_intp count = 0;
+
+        for (npy_intp j = 0; j < n; ++j) {
+            float v = A[IDX[j]];
+            if (!is_nan_f32(v)) {
+                acc += (double)v;
+                count++;
+            }
         }
 
-        double acc = 0.0;
-        for (npy_intp j = 0; j < n; ++j) {
-            acc += (double)A[IDX[j]];
-        }
-        O[k] = (float)(acc / (double)n);
+        O[k] = (count > 0) ? (float)(acc / (double)count) : (float)NPY_NAN;
     }
     Py_END_ALLOW_THREADS
 

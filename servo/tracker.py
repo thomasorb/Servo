@@ -105,11 +105,14 @@ class Record():
 
     def get_normalization_coeffs(self, width):
 
-        if self.position < 100:
+        if self.position < 2000:
             log.warning(f'Not enough data to compute normalization coefficients: only {self.position} frames recorded')
-            return None, None, None, None
+            return None, None
         
         ircube = self.ir_images[:self.position].copy()
+
+        # save ircube used for noramlization as an npy file for later analysis with a timestamp in the path
+        np.save(f'servo_tracker_normalization_ircube_{time.strftime("%Y%m%d-%H%M%S")}.npy', ircube)
         
         # recompute normalization maps
         # ix, iy = np.array(ircube.shape[1:])//2
@@ -143,7 +146,7 @@ class Tracker(core.Worker):
                 self.State.RUNNING, action=self._normalize),        
         }
         
-        self.frequencies = [int(ifreq) for ifreq in config.TRACKER_STATS_FREQUENCIES]
+        self.frequencies = [ifreq for ifreq in config.TRACKER_STATS_FREQUENCIES]
         if config.TRACKER_FREQUENCY not in self.frequencies:
             self.frequencies.append(config.TRACKER_FREQUENCY)
             
@@ -194,11 +197,13 @@ class Tracker(core.Worker):
         meantip = self.tip_buffer.mean_last(window_size)
         meantilt = self.tilt_buffer.mean_last(window_size)
         meantime = self.time_buffer.mean_last(window_size)
-        
-        self.data[f'Tracker.opd_{frequency}'][0] = float(meanopd)
-        self.data[f'Tracker.opd_std_{frequency}'][0] = float(self.opd_buffer.std_last(window_size))
-        self.data[f'Tracker.tip_{frequency}'][0] = float(meantip)
-        self.data[f'Tracker.tilt_{frequency}'][0] = float(meantilt)
+
+        frequency_str = f"{int(frequency)}" if frequency % 1 == 0 else f"{frequency:.1f}"
+
+        self.data[f'Tracker.opd_{frequency_str}'][0] = float(meanopd)
+        self.data[f'Tracker.opd_std_{frequency_str}'][0] = float(self.opd_buffer.std_last(window_size))
+        self.data[f'Tracker.tip_{frequency_str}'][0] = float(meantip)
+        self.data[f'Tracker.tilt_{frequency_str}'][0] = float(meantilt)
 
         self.last_opds[frequency].append(meanopd)
         self.last_times[frequency].append(meantime)
@@ -211,11 +216,12 @@ class Tracker(core.Worker):
                 velocity = self._last_velocity
                 log.warning(f'could not compute velocity @ {frequency}: invalid time difference: {_time}')
             if not np.isfinite(velocity):
-                velocity = self._last_velocity
                 log.warning(f'could not compute velocity @ {frequency}: non-finite value: {velocity}')
+                velocity = self._last_velocity
+
                 
             self._last_velocity = float(velocity)
-            self.data[f'Tracker.velocity_{frequency}'][0] = float(velocity)
+            self.data[f'Tracker.velocity_{frequency_str}'][0] = float(velocity)
                 
         else:
             velocity = np.nan
@@ -263,6 +269,9 @@ class Tracker(core.Worker):
         width = int(self.data['params.PROFILE_WIDTH'][0])
         
         roinorm_min, roinorm_max = self.record.get_normalization_coeffs(width)
+        if roinorm_min is None or roinorm_max is None:
+            log.warning('Could not compute normalization coefficients.')
+            return
         
         self.data['Servo.roinorm_min'][:self.profile_len**2] = roinorm_min.astype(config.FRAME_DTYPE).flatten()
         self.data['Servo.roinorm_max'][:self.profile_len**2] = roinorm_max.astype(config.FRAME_DTYPE).flatten()

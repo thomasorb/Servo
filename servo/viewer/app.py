@@ -276,7 +276,12 @@ class Viewer(core.Worker):
             lost_row, diameter=12, on_color="#c0392b", off_color="#2ecc71")
         self.led_lost[0].pack(side=tk.LEFT, padx=6)
         
-        self._build_piezos(self._right_col)
+        # --- Piezo + ROI shift side by side ---
+        piezos_row = ttk.Frame(self._right_col)
+        piezos_row.pack(fill=tk.X, expand=False, pady=15)
+
+        self._build_piezos(piezos_row)
+        self._build_roi_shift_controls(piezos_row)
 
         # Move params inputs
         move_frame = ttk.LabelFrame(self._right_col, text='Move parameters', padding=10)
@@ -431,8 +436,8 @@ class Viewer(core.Worker):
 
     def _reset_tiptilt(self):
         try:
-            self.data['Servo.tip_target'][0] = float(self.data['Tracker.tip_3'][0])
-            self.data['Servo.tilt_target'][0] = float(self.data['Tracker.tilt_3'][0])
+            self.data['Servo.tip_target'][0] = float(self.data['Tracker.tip_0.3'][0])
+            self.data['Servo.tilt_target'][0] = float(self.data['Tracker.tilt_0.3'][0])
         except Exception:
             pass
 
@@ -565,7 +570,7 @@ class Viewer(core.Worker):
     # right: piezos
     def _build_piezos(self, parent):
         frame = ttk.LabelFrame(parent, text='Piezos', padding=10)
-        frame.pack(fill=tk.Y, expand=False)
+        frame.pack(side=tk.LEFT, fill=tk.Y, expand=False, padx=(0, 10))
         row = ttk.Frame(frame); row.pack(fill=tk.Y, expand=False)
         self.var_opd = tk.DoubleVar(value=0.0)
         self.var_da1 = tk.DoubleVar(value=0.0)
@@ -619,6 +624,56 @@ class Viewer(core.Worker):
     def _on_piezos_change(self, *_):
         self._write_piezos()
 
+    def _build_roi_shift_controls(self, parent):
+        frame = ttk.LabelFrame(parent, text='ROI shift', padding=10)
+        frame.pack(side=tk.LEFT, fill=tk.Y, expand=False)
+
+        def shift(dx=0, dy=0):
+            try:
+                self.data['IRCamera.profile_h_shift'][0] += dx
+                self.data['IRCamera.profile_v_shift'][0] += dy
+            except Exception:
+                pass
+
+        def reset_shift():
+            try:
+                self.data['IRCamera.profile_h_shift'][0] = 0
+                self.data['IRCamera.profile_v_shift'][0] = 0
+            except Exception:
+                pass
+
+        # boutons empilés verticalement
+
+        ttk.Button(
+            frame, text='X -', width=6,
+            command=lambda: shift(dx=-1)
+        ).pack(pady=2)
+
+        ttk.Button(
+            frame, text='X +', width=6,
+            command=lambda: shift(dx=+1)
+        ).pack(pady=2)
+
+        ttk.Separator(frame, orient='horizontal').pack(fill='x', pady=6)
+
+        ttk.Button(
+            frame, text='Y +', width=6,
+            command=lambda: shift(dy=-1)
+        ).pack(pady=2)
+
+        ttk.Button(
+            frame, text='Y -', width=6,
+            command=lambda: shift(dy=+1)
+        ).pack(pady=2)
+
+        ttk.Separator(frame, orient='horizontal').pack(fill='x', pady=6)
+
+        ttk.Button(
+            frame, text='Reset', width=6,
+            command=reset_shift
+        ).pack(pady=2)
+
+    
     # --- state helpers ---
     def _servo_state(self):
         """Return ServoState or None."""
@@ -681,7 +736,7 @@ class Viewer(core.Worker):
         self._set_enabled(self.roi_mode_btn, st == ServoState.RUNNING)
 
         # Reset ZPD only in OPEN LOOP
-        self._set_enabled(self.reset_zpd_btn, st == ServoState.TRACKING)
+        self._set_enabled(self.reset_zpd_btn, st == ServoState.RUNNING)
 
         # Calibrate Velocity only in RUNNING
         self._set_enabled(self.calibrate_velocity_btn, st == ServoState.RUNNING)
@@ -759,6 +814,33 @@ class Viewer(core.Worker):
             else:
                 self.roi_canvas.itemconfig(self.roi_image_id, image=self._tk_roi)
                 self.roi_canvas.coords(self.roi_image_id, 0, 0)
+
+            # --- draw red cross with ROI shift ---
+            self.roi_canvas.delete('cross')
+
+            h_shift = int(self.data['IRCamera.profile_h_shift'][0])
+            v_shift = int(self.data['IRCamera.profile_v_shift'][0])
+
+            cw = self.roi_canvas.winfo_width()
+            ch = self.roi_canvas.winfo_height()
+            n = self.roi_shape[0]
+
+            scale = cw / n if n > 0 else 1.0
+
+            cx = cw / 2 + h_shift * scale
+            cy = ch / 2 + v_shift * scale
+
+            size = 8  # demi-longueur des branches
+
+            self.roi_canvas.create_line(
+                cx - size, cy, cx + size, cy,
+                fill='red', width=2, tags='cross'
+            )
+            self.roi_canvas.create_line(
+                cx, cy - size, cx, cy + size,
+                fill='red', width=2, tags='cross'
+            )
+
         except Exception as e:
             log.error(f'roi refresh: {e}')
             log.error(f'{traceback.format_exc()}')

@@ -4,6 +4,8 @@ PID_WALK_OPD = [2e-5, 0.02, 0]
 PID_TRACK_OPD = [2e-5, 2e-6, 0.]
 PID_TRACK_DA1 = [-0.0003, -5e-5, 0.]
 PID_TRACK_DA2 = [-0.0003, -5e-5, 0.]
+PID_DA_DEADBAND = 0.02
+PID_DA_KAW = 0.
 
 NEXLINE_CALIB_OPD = 30000 # nm, opd diplacement to reach for nexline velocity calibration
 NEXLINE_OPD_UPDATE = 30000 # nm, opd displacement to update nexline velocity
