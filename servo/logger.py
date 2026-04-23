@@ -1,16 +1,28 @@
+import atexit
 import logging
 import logging.handlers
 import multiprocessing as mp
 import os
 import sys
-import uuid
-import atexit
 import time
+import uuid
 from typing import Optional
+
 
 # --------- Default log file location ----------
 _DEFAULT_LOG_FILE = os.path.expanduser("~/.local/state/servo/servo.log")
 LOG_FILE = os.getenv("SERVO_LOG_FILE", _DEFAULT_LOG_FILE)
+
+# Approximate size limit (~30 MB) with rotation
+_DEFAULT_MAX_BYTES = 30 * 1024 * 1024
+_DEFAULT_BACKUP_COUNT = 3
+
+LOG_MAX_BYTES = int(os.getenv("SERVO_LOG_MAX_BYTES", str(_DEFAULT_MAX_BYTES)))
+LOG_BACKUP_COUNT = int(os.getenv("SERVO_LOG_BACKUP_COUNT", str(_DEFAULT_BACKUP_COUNT)))
+
+# Keep original streams to avoid logging recursion loops
+_REAL_STDOUT = getattr(sys, "__stdout__", sys.stdout)
+_REAL_STDERR = getattr(sys, "__stderr__", sys.stderr)
 
 # Global objects used by the logging system
 _queue: Optional[mp.Queue] = None
@@ -19,185 +31,206 @@ _initialized: bool = False
 _session_id: Optional[str] = None
 _session_start_ns: Optional[int] = None
 
+
 # --------- ANSI colors for console output ----------
-
-import os
-import sys
-
-def _supports_color():
-    """
-    Returns True if the current output supports ANSI colors.
-    - TTY required
-    - On Windows, requires colorama or WT/conhost with VT enabled
-    - Disables color in common CI environments unless FORCE_COLOR is set
-    """
-    if os.getenv("NO_COLOR"):
-        return False
-    if os.getenv("FORCE_COLOR"):
-        return True
-    if not hasattr(sys.stdout, "isatty") or not sys.stdout.isatty():
-        return False
-
-    if os.name == "nt":
-        # Try to enable ANSI on Windows with colorama if available
-        try:
-            import colorama
-            colorama.just_fix_windows_console()
-            return True
-        except Exception:
-            # Windows 10+ often supports VT sequences in modern terminals
-            return os.getenv("WT_SESSION") is not None
-    return True
-
-
-def _rgb(r, g, b):
-    """Return an ANSI 24-bit color sequence for foreground RGB."""
-    return f"\033[38;2;{r};{g};{b}m"
-
-
 RESET = "\033[0m"
 DIM = "\033[2m"
 BOLD = "\033[1m"
 
-
-# Pastel palettes (RGB)
 _THEMES = {
     "pastel": {
-        "DEBUG":  (137, 165, 255),  # soft periwinkle blue
-        "INFO":   (144, 238, 196),  # mint green
-        "WARNING":(255, 236, 158),  # buttery yellow
-        "ERROR":  (255, 183, 178),  # soft coral
-        "CRITICAL": (218, 160, 255) # lavender
+        "DEBUG": (137, 165, 255),
+        "INFO": (144, 238, 196),
+        "WARNING": (255, 236, 158),
+        "ERROR": (255, 183, 178),
+        "CRITICAL": (218, 160, 255),
     },
     "soft": {
-        "DEBUG":  (164, 196, 244),  # baby blue
-        "INFO":   (180, 234, 204),  # seafoam
-        "WARNING":(252, 222, 156),  # peachy sand
-        "ERROR":  (250, 170, 160),  # light salmon
-        "CRITICAL": (230, 180, 255) # lilac
+        "DEBUG": (164, 196, 244),
+        "INFO": (180, 234, 204),
+        "WARNING": (252, 222, 156),
+        "ERROR": (250, 170, 160),
+        "CRITICAL": (230, 180, 255),
     },
     "mono": {
-        # No color; mapped to None → disables coloring
-        "DEBUG":   None,
-        "INFO":    None,
+        "DEBUG": None,
+        "INFO": None,
         "WARNING": None,
-        "ERROR":   None,
-        "CRITICAL":None,
-    }
+        "ERROR": None,
+        "CRITICAL": None,
+    },
 }
 
 
+def _supports_color(stream=None) -> bool:
+    """Return True if the given output stream supports ANSI colors."""
+    if os.getenv("NO_COLOR"):
+        return False
+    if os.getenv("FORCE_COLOR"):
+        return True
+
+    stream = stream or _REAL_STDOUT
+    if not hasattr(stream, "isatty") or not stream.isatty():
+        return False
+
+    if os.name == "nt":
+        try:
+            import colorama  # type: ignore
+
+            colorama.just_fix_windows_console()
+            return True
+        except Exception:
+            return os.getenv("WT_SESSION") is not None
+
+    return True
+
+
+def _rgb(r: int, g: int, b: int) -> str:
+    return f"\033[38;2;{r};{g};{b}m"
+
+
 class ColorFormatter(logging.Formatter):
-    """
-    Console formatter with selectable pastel themes.
-    Uses TrueColor ANSI when available, otherwise gracefully degrades.
-    If color is disabled, falls back to plain text formatting.
-    """
-    def __init__(self, fmt, theme="pastel", use_color=None):
+    """Console formatter with optional pastel coloring."""
+
+    def __init__(self, fmt: str, theme: str = "pastel", use_color: Optional[bool] = None):
         super().__init__(fmt)
         self.theme = theme if theme in _THEMES else "pastel"
         self.palette = _THEMES[self.theme]
-        self.use_color = _supports_color() if use_color is None else use_color
+        if use_color is None:
+            use_color = _supports_color(_REAL_STDOUT)
+        self.use_color = use_color
 
-        # Fallback to mono if colors not supported
         if not self.use_color or self.theme == "mono":
             self.palette = _THEMES["mono"]
 
-    def _colorize_level(self, levelname, text):
+    def _colorize_level(self, levelname: str, text: str) -> str:
         color_rgb = self.palette.get(levelname)
         if not color_rgb:
-            return text  # mono or unknown
+            return text
         r, g, b = color_rgb
         return f"{_rgb(r, g, b)}{text}{RESET}"
 
-    def format(self, record):
-        # Format base message
+    def format(self, record: logging.LogRecord) -> str:
         base = super().format(record)
+        if not self.use_color:
+            return base
 
-        if not self.palette.get(record.levelname):
-            return base  # mono
-
-        # Subtle styling: color entire line softly + dim the metadata brackets
-        # Keep format: "[LEVEL] message" → colorize the level tag, leave message uncolored or slightly colored
         try:
-            # Colorize the [LEVEL] part only for readability
             if base.startswith("[") and "] " in base:
                 left, rest = base.split("] ", 1)
                 level = left.strip("[]")
-                left_col = f"[{self._colorize_level(level, level)}]"
+                left_col = self._colorize_level(level, f"[{level}]")
                 return f"{left_col} {rest}"
-            else:
-                # If format differs, softly color the whole line
-                return self._colorize_level(record.levelname, base)
+            return self._colorize_level(record.levelname, base)
         except Exception:
-            # Never break logging on formatting
             return base
 
 
 class _StreamToLogger:
     """
-    Redirects print() and raw stdout/stderr writes into the logging system.
-    This ensures all output ends up in the same log file and console stream.
+    Redirect raw stdout/stderr writes into logging, while preventing recursion.
     """
-    def __init__(self, logger_name, level):
+
+    def __init__(self, logger_name: str, level: int, fallback_stream=None):
         self._logger = logging.getLogger(logger_name)
         self._level = level
+        self._fallback = fallback_stream or _REAL_STDERR
+        self._in_write = False
 
-    def write(self, message):
-        message = message.rstrip()
-        if message:
-            self._logger.log(self._level, message)
+    def write(self, message: str) -> None:
+        if not message:
+            return
+        if message.isspace():
+            return
 
-    def flush(self):
-        pass
+        # Prevent recursive logging when logging itself writes to stderr (handleError()).
+        if self._in_write:
+            try:
+                self._fallback.write(message)
+                self._fallback.flush()
+            except Exception:
+                pass
+            return
+
+        # Bypass logging's internal error banners/tracebacks to the real stderr.
+        if (
+            message.startswith("--- Logging error ---")
+            or message.startswith("Traceback (most recent call last):")
+            or message.startswith("Call stack:")
+        ):
+            try:
+                self._fallback.write(message)
+                self._fallback.flush()
+            except Exception:
+                pass
+            return
+
+        try:
+            self._in_write = True
+            msg = message.rstrip("\n")
+            if msg:
+                self._logger.log(self._level, msg)
+        finally:
+            self._in_write = False
+
+    def flush(self) -> None:
+        try:
+            self._fallback.flush()
+        except Exception:
+            pass
+
+    def isatty(self) -> bool:
+        return bool(getattr(self._fallback, "isatty", lambda: False)())
+
+    @property
+    def encoding(self) -> str:
+        return getattr(self._fallback, "encoding", "utf-8")
 
 
 def _to_level(level):
-    """Converts strings like 'INFO' to logging.INFO integers."""
+    """Convert strings like 'INFO' to logging.INFO integers."""
     if isinstance(level, int):
         return level
-    return logging._nameToLevel.get(level.upper(), logging.INFO)
+    return logging._nameToLevel.get(str(level).upper(), logging.INFO)
 
 
-# -------------------------------------------------------------
-# Shutdown handler MUST be defined before init_logging()
-# -------------------------------------------------------------
 def shutdown_logging():
-    """
-    Called automatically when the process exits.
-    Ensures the QueueListener is stopped cleanly and logs the session end.
-    """
-    global _listener, _session_start_ns
+    """Stop QueueListener cleanly and restore original std streams."""
+    global _listener, _session_start_ns, _initialized
 
-    if _listener is not None:
-        try:
-            root = logging.getLogger()
-            if _session_start_ns is not None:
-                elapsed_s = (time.time_ns() - _session_start_ns) / 1e9
-                root.info(f"=== Servo Session {_session_id} ended (elapsed: {elapsed_s:.3f}s) ===")
-            else:
-                root.info(f"=== Servo Session {_session_id} ended ===")
-        except Exception:
-            pass
+    root = logging.getLogger()
 
-        try:
+    try:
+        if _session_start_ns is not None:
+            elapsed_s = (time.time_ns() - _session_start_ns) / 1e9
+            root.info(f"=== Servo Session {_session_id} ended (elapsed: {elapsed_s:.3f}s) ===")
+        else:
+            root.info(f"=== Servo Session {_session_id} ended ===")
+    except Exception:
+        pass
+
+    try:
+        if _listener is not None:
             _listener.stop()
-        except Exception:
-            pass
+    except Exception:
+        pass
 
-        _listener = None
+    _listener = None
+
+    # Restore real streams (avoid surprises after shutdown)
+    try:
+        sys.stdout = _REAL_STDOUT
+        sys.stderr = _REAL_STDERR
+    except Exception:
+        pass
+
+    _initialized = False
 
 
-# -------------------------------------------------------------
-# Main initialization function
-# -------------------------------------------------------------
-def init_logging(level="INFO", log_file=None, redirect_std=True, theme='pastel'):
+def init_logging(level="INFO", log_file=None, redirect_std=True, theme="pastel"):
     """
-    Initialize a robust multi-process logging system.
-    - Creates a unique session ID and timestamps execution.
-    - Centralizes logs from all processes via a QueueListener.
-    - Writes to both a file and a colorized console stream.
-    - Optionally redirects print() and raw stdout to logging.
+    Initialize multiprocessing-safe logging through a central QueueListener.
+    All stdout/stderr can be redirected to logging.
     """
     global _queue, _listener, _initialized, _session_id, _session_start_ns
 
@@ -211,17 +244,27 @@ def init_logging(level="INFO", log_file=None, redirect_std=True, theme='pastel')
     root = logging.getLogger()
     root.setLevel(lvl)
 
-    # File handler (no colors, long format)
+    # File handler with rotation (~30 MB)
     file_fmt = logging.Formatter(
         "%(asctime)s [%(levelname)s] (%(processName)s) (%(name)s) %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
-    file_handler = logging.FileHandler(log_path, mode="a", encoding="utf-8")
+    file_handler = logging.handlers.RotatingFileHandler(
+        log_path,
+        mode="a",
+        maxBytes=LOG_MAX_BYTES,
+        backupCount=LOG_BACKUP_COUNT,
+        encoding="utf-8",
+        delay=True,
+    )
+    file_handler.setLevel(lvl)
     file_handler.setFormatter(file_fmt)
 
-    # Console handler (__stdout__ avoids loops if sys.stdout is redirected)
-    console_handler = logging.StreamHandler(stream=getattr(sys, "__stdout__", sys.stdout))
-    console_handler.setFormatter(ColorFormatter("[%(levelname)s] (%(name)s) %(message)s"))
+    # Console handler (use real stdout to avoid loops)
+    console_stream = _REAL_STDOUT
+    console_handler = logging.StreamHandler(stream=console_stream)
+    console_handler.setLevel(lvl)
+    console_handler.setFormatter(ColorFormatter("[%(levelname)s] (%(name)s) %(message)s", theme=theme))
 
     # Shared queue and listener for all logs (main + workers)
     _queue = mp.Queue()
@@ -239,24 +282,17 @@ def init_logging(level="INFO", log_file=None, redirect_std=True, theme='pastel')
     _session_start_ns = time.time_ns()
     root.info(f"=== Servo Session {_session_id} started === (log: {log_path})")
 
-    # Optional: redirect print() and stderr
     if redirect_std:
-        sys.stdout = _StreamToLogger("stdout", logging.INFO)
-        sys.stderr = _StreamToLogger("stderr", logging.ERROR)
+        sys.stdout = _StreamToLogger("stdout", logging.INFO, fallback_stream=_REAL_STDOUT)
+        sys.stderr = _StreamToLogger("stderr", logging.ERROR, fallback_stream=_REAL_STDERR)
 
-    # Register graceful shutdown
     atexit.register(shutdown_logging)
-
     _initialized = True
 
 
-# -------------------------------------------------------------
-# Worker process initialization
-# -------------------------------------------------------------
 def configure_worker_logging(level=None, redirect_std=True, queue=None):
     """
-    Must be called at the beginning of each multiprocessing worker.
-    Ensures the worker uses the same QueueHandler as the main process.
+    Configure logging for a multiprocessing worker to send logs to the main listener.
     """
     global _queue
 
@@ -268,26 +304,19 @@ def configure_worker_logging(level=None, redirect_std=True, queue=None):
     if queue is not None:
         _queue = queue
 
-    # Each worker has only a QueueHandler
     root.handlers = []
     if _queue is None:
-        # Fallback — should never happen unless called incorrectly
-        stream = logging.StreamHandler(stream=getattr(sys, "__stdout__", sys.stdout))
-        fmt = ColorFormatter("[%(levelname)s] %(name)s: %(message)s")
-        stream.setFormatter(fmt)
+        stream = logging.StreamHandler(stream=_REAL_STDOUT)
+        stream.setFormatter(ColorFormatter("[%(levelname)s] (%(name)s) %(message)s", theme="mono"))
         root.addHandler(stream)
     else:
         root.addHandler(logging.handlers.QueueHandler(_queue))
 
     if redirect_std:
-        sys.stdout = _StreamToLogger("stdout", logging.INFO)
-        sys.stderr = _StreamToLogger("stderr", logging.ERROR)
-
+        sys.stdout = _StreamToLogger("stdout", logging.INFO, fallback_stream=_REAL_STDOUT)
+        sys.stderr = _StreamToLogger("stderr", logging.ERROR, fallback_stream=_REAL_STDERR)
 
 
 def get_logging_queue():
-    """
-    Returns the logging queue so it can be explicitly passed
-    to multiprocessing workers.
-    """
+    """Return the logging queue to pass it explicitly to worker processes."""
     return _queue
