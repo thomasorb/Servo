@@ -875,8 +875,8 @@ class Viewer(core.Worker):
         try:
             self.main_tab.update_profiles()
             self._update_status()
-        except Exception:
-            pass
+        except Exception as e:
+            log.error(f'status refresh: {e}, traceback: {traceback.format_exc()}')
         # debug inspector
         try:
             self.debug_tab.update()

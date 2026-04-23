@@ -211,6 +211,8 @@ class SharedData(object):
         self.add_array('Pid.params.PID_TRACK_DA1.uepid', np.zeros(5, dtype=config.FRAME_DTYPE), stored=False)
         self.add_array('Pid.params.PID_TRACK_DA2.uepid', np.zeros(5, dtype=config.FRAME_DTYPE), stored=False)
         self.add_array('Pid.params.PID_TRACK_OPD.uepid', np.zeros(5, dtype=config.FRAME_DTYPE), stored=False)
+        self.add_array('Pid.params.PID_WALK_DA1.uepid', np.zeros(5, dtype=config.FRAME_DTYPE), stored=False)
+        self.add_array('Pid.params.PID_WALK_DA2.uepid', np.zeros(5, dtype=config.FRAME_DTYPE), stored=False)
         self.add_array('Pid.params.PID_WALK_OPD.uepid', np.zeros(5, dtype=config.FRAME_DTYPE), stored=False)
         
         self.add_array('DAQ.piezos_level',

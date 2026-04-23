@@ -293,6 +293,19 @@ class MainTab:
         n = int(self.viewer.data['IRCamera.profile_len'][0])
         hlevels = self.viewer.data['IRCamera.hprofile_levels'][:n]
         vlevels = self.viewer.data['IRCamera.vprofile_levels'][:n]
+        hnorm = self.viewer.data['Servo.hellipse_norm_coeffs']
+        vnorm = self.viewer.data['Servo.vellipse_norm_coeffs']
+
+        def norm_levels(levels, norm):
+            l0 = levels[0] - levels[1] * (norm[1] - norm[0]) - norm[0]
+            l2 = levels[2] - levels[1] * (norm[3] - norm[2]) - norm[2]
+            l1 = levels[1] - 0.5
+            return np.array((l0, l1, l2))
+
+        hlevels_norm = norm_levels(hlevels, hnorm)
+        vlevels_norm = norm_levels(vlevels, vnorm)
+
+        
         hpos = self.viewer.data['IRCamera.hprofile_levels_pos'][:n]
         vpos = self.viewer.data['IRCamera.vprofile_levels_pos'][:n]
         if self.viewer.show_normalized:
@@ -333,20 +346,20 @@ class MainTab:
                 ax.scatter(cen[0], right[0], color='tab:orange')
                 ax.scatter(cen[:nbuf], left[:nbuf], color='tab:blue', alpha=0.2)
                 ax.scatter(cen[:nbuf], right[:nbuf], color='tab:orange', alpha=0.2)
-            ax.set_xlim(-0.1, 1.1)
-            ax.set_ylim(-0.1, 1.1)
+            ax.set_xlim(-0.6, 0.6)
+            ax.set_ylim(-0.6, 0.6)
             ax.set_xticks([]); ax.set_yticks([])
             for s in ax.spines.values(): s.set_visible(False)
             ax.set_position([0,0,1,1])
             fig.subplots_adjust(left=0, right=1, top=1, bottom=0)
-            for v in (0, 0.5, 1):
-                ax.axvline(v, c='0.8' if v in (0,1) else '0.5')
-                ax.axhline(v, c='0.8' if v in (0,1) else '0.5')
+            for v in (-0.5, 0., 0.5):
+                ax.axvline(v, c='0.8' if v in (-0.5,0.5) else '0.5')
+                ax.axhline(v, c='0.8' if v in (-0.5,0.5) else '0.5')
             canvas.draw()
 
         draw(self.fig_h, self.ax_h, self.canvas_h, horiz, 'V profile', hlevels, hpos)
         draw(self.fig_v, self.ax_v, self.canvas_v, vert,  'H profile', vlevels, vpos)
-        self.hlevels_buf.appendleft(np.copy(hlevels))
-        self.vlevels_buf.appendleft(np.copy(vlevels))
+        self.hlevels_buf.appendleft(np.copy(hlevels_norm))
+        self.vlevels_buf.appendleft(np.copy(vlevels_norm))
         draw_ellipse(self.fig_ellx, self.ax_ellx, self.canvas_ellx, self.hlevels_buf)
         draw_ellipse(self.fig_elly, self.ax_elly, self.canvas_elly, self.vlevels_buf)

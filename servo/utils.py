@@ -372,6 +372,11 @@ def get_pixels_lists(states):
     left = np.ascontiguousarray(left, dtype=np.int32)
     center = np.ascontiguousarray(center, dtype=np.int32)
     right = np.ascontiguousarray(right, dtype=np.int32)
+
+    #side = np.ascontiguousarray(np.concatenate((left, right)), dtype=np.int32)
+    #center_left = center[:2]
+    #center_right = center[-2:]
+    #return center_left, side, center_right
     return left, center, right
 
 def get_mean_pixels_positions(pixels_lists):
@@ -543,6 +548,62 @@ def compute_angles(levels, ellipse_norm_coeffs, last_angles):
 
     return (unwrap_scalar_2pi(np.arctan2(l0, l1), last_angles[0]),
             unwrap_scalar_2pi(np.arctan2(l2, l1), last_angles[1]))
+
+import numba as nb
+import numpy as np
+import math
+
+
+@nb.njit(cache=True, fastmath=True, parallel=True)
+def unwrap_2pi_vec(angles, last_angles, out):
+    """
+    Vectorized 2π unwrap: out[i] = unwrap(angles[i], last_angles[i])
+    All computations are done in float64 for stability, then cast to float32.
+    """
+    two_pi = 2.0 * math.pi
+    pi = math.pi
+
+    n = angles.size
+    for i in nb.prange(n):
+        a = float(angles[i])
+        la = float(last_angles[i])
+
+        delta = a - la
+        # Wrap delta into [-pi, pi)
+        delta = delta - two_pi * math.floor((delta + pi) / two_pi)
+
+        out[i] = np.float32(la + delta)
+
+
+@nb.njit(cache=True, fastmath=True, parallel=True)
+def compute_angles_ref_scalar(levels0, ref_level, ellipse_norm_coeffs, last_angles, out):
+    """
+    Compute and unwrap multiple angles from:
+      - levels0: 1D array of "levels[0]" values (size N)
+      - ref_level: scalar reference level (the equivalent of levels[1])
+      - ellipse_norm_coeffs: array-like with at least 2 elements [c0, c1]
+      - last_angles: 1D array (size N) of previous unwrapped angles
+      - out: preallocated float32 output (size N)
+    """
+    c0 = float(ellipse_norm_coeffs[0])
+    c1 = float(ellipse_norm_coeffs[1])
+    dc = c1 - c0
+
+    ref = float(ref_level)
+    l1 = ref - 0.5  # constant for all i
+
+    n = levels0.size
+    for i in nb.prange(n):
+        # l0 = levels[0] - levels[1]*(c1-c0) - c0
+        l0 = float(levels0[i]) - ref * dc - c0
+
+        ang = math.atan2(l0, l1)
+
+        la = float(last_angles[i])
+        delta = ang - la
+        delta = delta - (2.0 * math.pi) * math.floor((delta + math.pi) / (2.0 * math.pi))
+
+        out[i] = np.float32(la + delta)
 
 
 @nb.njit(cache=True, fastmath=True)

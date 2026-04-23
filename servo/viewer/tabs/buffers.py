@@ -274,8 +274,8 @@ class BuffersTab:
         self._add_series('Tracker.velocity_3', reducer='value', label='Velocity')
 
     def _preset_tip_tilt(self):
-        self._add_series('Tracker.tip_0.1', reducer='value', label='Tip')
-        self._add_series('Tracker.tilt_0.1', reducer='value', label='Tilt')
+        self._add_series('Tracker.tip_1', reducer='value', label='Tip')
+        self._add_series('Tracker.tilt_1', reducer='value', label='Tilt')
 
     def _preset_opd_std(self):
         self._add_series('Tracker.opd_std_10', reducer='value', label='OPD std')

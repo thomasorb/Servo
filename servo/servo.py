@@ -228,8 +228,8 @@ class Servo(core.Worker):
                     last_update_time = time.time()
                         
                 opd = self.data['Tracker.opd_100'][0]
-                tip = self.data['Tracker.tip_0.1'][0]
-                tilt = self.data['Tracker.tilt_0.1'][0]
+                tip = self.data['Tracker.tip_1'][0]
+                tilt = self.data['Tracker.tilt_1'][0]
 
                 if not np.isnan(opd):
                     u_pid_opd = pid_opd_control.update(
@@ -454,6 +454,7 @@ class Servo(core.Worker):
         hpixels_lists = utils.get_pixels_lists(hpixels_states)
         vpixels_lists = utils.get_pixels_lists(vpixels_states)
         
+        
         hellipse_norm_coeffs = utils.get_ellipse_normalization_coeffs(
             rec_hprofiles, hnorm, hpixels_lists)
         vellipse_norm_coeffs = utils.get_ellipse_normalization_coeffs(
@@ -509,7 +510,7 @@ class Servo(core.Worker):
 
         self._center_piezos()
 
-        dacontroller = DAController(self.data)
+        dacontroller = DAController(self.data, mode='walking')
         
         # once OPD piezo is centered, a slow triangle move of the
         # piezo is made during the whole waiting process to enable the
@@ -579,7 +580,7 @@ class Servo(core.Worker):
         log.info(f"   Final OPD target: {final_opd_target} nm")
         log.info(f"   Velocity target: {velocity_target} um/s")
 
-        dacontroller = DAController(self.data)
+        dacontroller = DAController(self.data, mode='walking')
         
         self._center_piezos()
         
@@ -909,7 +910,7 @@ class Servo(core.Worker):
         time.sleep(0.5) # wait for camera to stop
         self.start_worker(ircam.IRCamera,
                           priority={"niceness": config.SERVO_MAX_NICENESS,
-                                    "cpus": [config.SERVO_CPU_IRCAM]},
+                                    "cpus": config.SERVO_CPU_IRCAM},
                           roi_mode=False)
                 
     
@@ -944,7 +945,15 @@ class Servo(core.Worker):
 
 
 class DAController(object):
-    def __init__(self, data):
+    def __init__(self, data, mode='walking'):
+
+        if mode == 'walking':
+            params_name = 'WALK'
+        elif mode == 'tracking':
+            params_name = 'TRACK'
+        else:
+            raise ValueError(f"Invalid mode {mode} for DAController")
+
         self.data = data
         
         self.tip_target = float(self.data['Servo.tip_target'][0])
@@ -971,12 +980,12 @@ class DAController(object):
 
         self.pid_da1_control = pid.get_pid_control(
             self.data,
-            'TRACK_DA1', out_min=da1_min, out_max=da1_max,
+            f'{params_name}_DA1', out_min=da1_min, out_max=da1_max,
             deadband=self.data['params.PID_DA_DEADBAND'],
             kaw=self.data['params.PID_DA_KAW'])
         self.pid_da2_control = pid.get_pid_control(
             self.data,
-            'TRACK_DA2', out_min=da2_min, out_max=da2_max,
+            f'{params_name}_DA2', out_min=da2_min, out_max=da2_max,
             deadband=self.data['params.PID_DA_DEADBAND'],
             kaw=self.data['params.PID_DA_KAW'])
 

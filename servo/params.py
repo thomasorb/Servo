@@ -1,9 +1,12 @@
 PROFILE_WIDTH = 4 # pixels, width of the profile used for servoing
 
-PID_WALK_OPD = [2e-5, 0.02, 0]
-PID_TRACK_OPD = [2e-5, 2e-6, 0.]
-PID_TRACK_DA1 = [-0.0003, -5e-5, 0.]
-PID_TRACK_DA2 = [-0.0003, -5e-5, 0.]
+PID_WALK_OPD = [1e-4, 2e-7, 0]
+PID_TRACK_OPD = [2e-5, 0, 0.]
+PID_TRACK_DA1 = [-0.0003, 0., 0.]
+PID_TRACK_DA2 = [-0.0003, 0., 0.]
+PID_WALK_DA1 = [0, -5e-7, 0.]
+PID_WALK_DA2 = [0, -5e-7, 0.]
+
 PID_DA_DEADBAND = 0.02
 PID_DA_KAW = 0.
 

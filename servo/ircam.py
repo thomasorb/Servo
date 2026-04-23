@@ -189,12 +189,12 @@ class DataObserver(NITLibrary.NITUserObserver):
         self.arr_vlevels    = self.data['IRCamera.vprofile_levels']
         self.arr_hlev_pos   = self.data['IRCamera.hprofile_levels_pos']
         self.arr_vlev_pos   = self.data['IRCamera.vprofile_levels_pos']
-        self.arr_last_angles= self.data['IRCamera.last_angles']
         self.arr_opds       = self.data['IRCamera.opds']
         self.arr_mean_opd   = self.data['IRCamera.mean_opd']
         self.arr_tip        = self.data['IRCamera.tip']
         self.arr_tilt       = self.data['IRCamera.tilt']
         self.arr_full_output = self.data['IRCamera.full_output']
+        self.arr_angles = self.data['IRCamera.angles']
         
         # Servo coeffs
         self.arr_roinorm_min  = self.data['Servo.roinorm_min']
@@ -217,9 +217,11 @@ class DataObserver(NITLibrary.NITUserObserver):
         self.arr_mean_opd_offset = self.data['IRCamera.mean_opd_offset']
 
         # Preallocated workspaces to avoid per-frame allocations
+        self.last_angles = np.empty(4, dtype=config.DATA_DTYPE)
+        self.angles_ws  = np.empty(4, dtype=config.DATA_DTYPE)
         self.hlevels_ws = np.empty(3, dtype=config.DATA_DTYPE)
         self.vlevels_ws = np.empty(3, dtype=config.DATA_DTYPE)
-        self.angles_ws  = np.empty(4, dtype=config.DATA_DTYPE)
+        
 
         # Pixel lists cache
         self.x_pixels_states = None
@@ -244,6 +246,7 @@ class DataObserver(NITLibrary.NITUserObserver):
 
         self.last_frame_time = None
         self.target_fps = self.data['IRCamera.target_fps'][0]
+
         
         gc.freeze()
         gc.disable()
@@ -366,13 +369,8 @@ class DataObserver(NITLibrary.NITUserObserver):
             vprofile_norm, hprofile_norm = compute_profiles_local_f32(
                 roi_norm.astype(np.float32, copy=False),
                 int(iy_profile), int(ix_profile), int(self.iwid), int(self.profile_len), get_roi=False, mask=mask)
-            vprofile, hprofile = compute_profiles_local_f32(
-                roi.astype(np.float32, copy=False),
-                int(iy_profile), int(ix_profile), int(self.iwid), int(self.profile_len), get_roi=False, mask=mask)
             
-            if compute_servo_output:
-
-                # Refresh pixel lists when states change
+            if compute_servo_output: # Refresh pixel lists when states change
                 x_states = self.arr_xpix_states
                 y_states = self.arr_ypix_states
             
@@ -402,24 +400,26 @@ class DataObserver(NITLibrary.NITUserObserver):
                         
                     self.arr_vlev_pos[:3] = self.ypixels_list_pos
 
-                # Normalized profiles (Numba kernels)
-                self.arr_hprof_norm[:self.profile_len] = hprofile_norm
-                self.arr_vprof_norm[:self.profile_len] = vprofile_norm
                 
-            # Levels (3 positions per axis)
+            # now that normalized profiles are computed we can compute levels,
+            # using the potentially updated pixel lists            
             self.hlevels_ws[:] = batch_compute_levels_f32(
-                hprofile_norm, self.xpixels_list[0], self.xpixels_list[1], self.xpixels_list[2]
-            )
+                hprofile_norm, self.xpixels_list[0], self.xpixels_list[1], self.xpixels_list[2])
+            
 
             self.vlevels_ws[:] = batch_compute_levels_f32(
-                vprofile_norm, self.ypixels_list[0], self.ypixels_list[1], self.ypixels_list[2]
-            )
+                vprofile_norm, self.ypixels_list[0], self.ypixels_list[1], self.ypixels_list[2])
+            
             
             # Angles & OPD
-            self.angles_ws[:2] = utils.compute_angles(self.hlevels_ws, self.arr_hellipse[:4],
-                                                      self.arr_last_angles[:2])
-            self.angles_ws[2:] = utils.compute_angles(self.vlevels_ws, self.arr_vellipse[:4],
-                                                      self.arr_last_angles[2:])                
+            self.angles_ws[:2] = utils.compute_angles(self.hlevels_ws,
+                                                      self.arr_hellipse[:4],
+                                                      #[0.,1.,0.,1.],
+                                                      self.last_angles[:2])
+            self.angles_ws[2:] = utils.compute_angles(self.vlevels_ws,
+                                                      self.arr_vellipse[:4],
+                                                      #[0.,1.,0.,1.],
+                                                      self.last_angles[2:])                
                 
             opds = utils.compute_opds(self.angles_ws)
             opds -= self.arr_mean_opd_offset[0]
@@ -435,6 +435,14 @@ class DataObserver(NITLibrary.NITUserObserver):
                 self.last_mean_opd = float(mean_opd)                
             
             if compute_servo_output:
+                # Normalized profiles (Numba kernels)
+                self.arr_hprof_norm[:self.profile_len] = hprofile_norm
+                self.arr_vprof_norm[:self.profile_len] = vprofile_norm
+
+                vprofile, hprofile = compute_profiles_local_f32(
+                    roi.astype(np.float32, copy=False),
+                    int(iy_profile), int(ix_profile), int(self.iwid),
+                    int(self.profile_len), get_roi=False, mask=mask)
                 
                 # Profiles & ROI to shared memory (no .flatten(), roi is contiguous)
                 self.arr_hprofile[:self.profile_len] = hprofile
@@ -447,14 +455,15 @@ class DataObserver(NITLibrary.NITUserObserver):
                 self.arr_vlevels[:3] = self.vlevels_ws
                 self.arr_opds[:4] = opds.astype(config.FRAME_DTYPE)
                 self.arr_mean_opd[0] = float(mean_opd)
+                self.arr_angles[:4] = np.mod(self.angles_ws, 2*np.pi).astype(config.FRAME_DTYPE)
 
-                tip = self.angles_ws[3] - self.angles_ws[2]
-                tilt  = self.angles_ws[1] - self.angles_ws[0]
-                self.arr_tip[0]  = tip
-                self.arr_tilt[0] = tilt
+            tip = self.angles_ws[3] - self.angles_ws[2]
+            tilt = self.angles_ws[1] - self.angles_ws[0]
+            self.arr_tip[0]  = tip
+            self.arr_tilt[0] = tilt
                 
                 
-            self.arr_last_angles[:4] = self.angles_ws
+            self.last_angles = self.angles_ws
             loop_time = time.perf_counter() - frame_time
             self.arr_loop_time[0] = loop_time
             self.arr_loop_fps[0] = 1./loop_time
