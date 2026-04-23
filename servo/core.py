@@ -167,6 +167,7 @@ class SharedData(object):
 
         self.add_value('IRCamera.mean_sampling_time', float(np.nan))
         self.add_value('IRCamera.fps', float(np.nan))
+        self.add_value('IRCamera.target_fps', float(np.nan))
         self.add_value('IRCamera.loop_time', float(np.nan))
         self.add_value('IRCamera.loop_fps', float(np.nan))
         self.add_value('IRCamera.lost_frames', int(0))
@@ -207,6 +208,11 @@ class SharedData(object):
         
         self.add_value('Servo.walk_velocity', float(np.nan), stored=False)
         
+        self.add_array('Pid.params.PID_TRACK_DA1.uepid', np.zeros(5, dtype=config.FRAME_DTYPE), stored=False)
+        self.add_array('Pid.params.PID_TRACK_DA2.uepid', np.zeros(5, dtype=config.FRAME_DTYPE), stored=False)
+        self.add_array('Pid.params.PID_TRACK_OPD.uepid', np.zeros(5, dtype=config.FRAME_DTYPE), stored=False)
+        self.add_array('Pid.params.PID_WALK_OPD.uepid', np.zeros(5, dtype=config.FRAME_DTYPE), stored=False)
+        
         self.add_array('DAQ.piezos_level',
                        np.zeros(3, dtype=config.DAQ_PIEZO_LEVELS_DTYPE),
                        stored=True)
@@ -214,6 +220,7 @@ class SharedData(object):
         self.add_array('DAQ.piezos_level_actual',
                        np.zeros(3, dtype=config.DAQ_PIEZO_LEVELS_DTYPE),
                        stored=True)
+
         self.add_value('DAQ.state', float(0), stored=False)
         self.add_value('DAQ.loop_time', float(0), stored=False)
         self.add_value('DAQ.frequency', float(0), stored=False)

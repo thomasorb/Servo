@@ -227,13 +227,17 @@ class Viewer(core.Worker):
                                           command=lambda: self._set_event('Servo.move_to_opd'))
         self.move_to_opd_btn.pack(side=tk.RIGHT, padx=10)
 
+        self.close_loop_btn = ttk.Button(toolbar, text='CLOSE LOOP', style='Orange.TButton',
+                                         command=self.toggle_close_loop)
+        self.close_loop_btn.pack(side=tk.RIGHT, padx=10)
+
         self.walk_to_opd_btn = ttk.Button(toolbar, text='WALK to OPD', style='Green.TButton',
                                           command=self.toggle_walk_to_opd)
         self.walk_to_opd_btn.pack(side=tk.RIGHT, padx=10)
 
-        self.close_loop_btn = ttk.Button(toolbar, text='CLOSE LOOP', style='Orange.TButton',
-                                         command=self.toggle_close_loop)
-        self.close_loop_btn.pack(side=tk.RIGHT, padx=10)
+        self.wait_btn = ttk.Button(toolbar, text='WAIT', style='Orange.TButton',
+                                   command=self.toggle_wait)
+        self.wait_btn.pack(side=tk.RIGHT, padx=10)
 
         self.reset_tiptilt_btn = ttk.Button(toolbar, text='Reset TIP-TILT', style='Yellow.TButton',
                                             command=self._reset_tiptilt)
@@ -433,6 +437,13 @@ class Viewer(core.Worker):
             self._set_event('Servo.stop_walking')
         else:
             self._set_event('Servo.walk_to_opd')
+
+    def toggle_wait(self):
+        st = self._servo_state()
+        if st == ServoState.WAITING:
+            self._set_event('Servo.stop_waiting')
+        else:
+            self._set_event('Servo.start_waiting')
 
     def _reset_tiptilt(self):
         try:
@@ -697,6 +708,13 @@ class Viewer(core.Worker):
         else:
             self.walk_to_opd_btn.config(text='WALK to OPD')
 
+    def _sync_wait_button(self, state):
+        """Set button label to the next valid action based on current state."""
+        if state == ServoState.WAITING:
+            self.wait_btn.config(text='STOP WAITING')
+        else:
+            self.wait_btn.config(text='WAIT')
+
     def _set_enabled(self, widget, enabled: bool):
         try:
             if enabled:
@@ -740,6 +758,10 @@ class Viewer(core.Worker):
 
         # Calibrate Velocity only in RUNNING
         self._set_enabled(self.calibrate_velocity_btn, st == ServoState.RUNNING)
+
+        # Wait only in RUNNING and stop Wait only in WAITING
+        self._set_enabled(self.wait_btn, st in (ServoState.RUNNING, ServoState.WAITING))
+        self._sync_wait_button(st)
 
         # Record
         self._set_enabled(self.record_btn, st in (ServoState.RUNNING, ServoState.TRACKING))
@@ -899,5 +921,5 @@ class Viewer(core.Worker):
             log.error(f"Error during IA training step: {e}: {traceback.format_exc()}")
         
         # schedule
-        self.root.after(100, self.refresh)
+        self.root.after(config.VIEWER_REFRESH_PERIOD, self.refresh)
             

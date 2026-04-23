@@ -17,7 +17,27 @@ class PIDConfig:
     kaw: float = 0.0               # Anti-windup back-calculation gain (0=off)
     deadband: float = 0.0          # Optional error deadband (units)        
         
-    
+
+
+def get_pid_control(data, name,
+                    out_min=config.PIEZO_V_MIN,
+                    out_max=config.PIEZO_V_MAX,
+                    deadband=0.0,
+                    kaw=5.0):
+        
+        dt = config.OPD_LOOP_TIME
+
+        pid_control = PiezoPID(
+            data,
+            f'params.PID_{name}',
+            dt=dt,
+            out_min=out_min,
+            out_max=out_max,
+            deriv_filter_hz=1/dt/1000., kaw=kaw, deadband=deadband
+        )
+        
+        return pid_control
+
 class PID:
     def __init__(self, cfg: PIDConfig):
         self.cfg = cfg
@@ -77,10 +97,15 @@ class PID:
 
         # Unsaturated output
         u_unsat = control + p + i_candidate + d
-
+        
         # Apply output limits
         u = max(cfg.out_min, min(cfg.out_max, u_unsat))
 
+        try:
+            self.data[f'Pid.{self.coeff_key}.uepid'][:5] = np.array((u, error, p, i_candidate, d), dtype=np.float32)
+        except Exception as e:
+            pass
+        
         # Anti-windup: integrator clamping + optional back-calculation
         saturated = (u != u_unsat)
         if saturated:
@@ -104,6 +129,7 @@ class PiezoPID(PID):
     def __init__(self, data, coeff_key, dt, out_min, out_max,
                  deriv_filter_hz=50.0, kaw=0.0, deadband=0.0):
 
+
         self.data = data
         self.coeff_key = coeff_key
         
@@ -118,6 +144,8 @@ class PiezoPID(PID):
 
     def update_coeffs(self):
         kp, ki, kd = self.data[self.coeff_key][:3]
+        if kp != self.cfg.ki or ki != self.cfg.ki or kd != self.cfg.kd:
+            self.reset()  # reset integrator and derivative filter if gains changed
         self.cfg.kp = float(kp)
         self.cfg.ki = float(ki)
         self.cfg.kd = float(kd)
@@ -130,7 +158,6 @@ class PiezoPID(PID):
         """
         super().update_config(**kwargs)
         self.update_coeffs()
-
 
 import numpy as np
 from collections import deque

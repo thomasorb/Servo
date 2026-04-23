@@ -30,4 +30,7 @@ NEXLINE_VELOCITY_ADJUSTMENT_GAIN = 1.3 # must be > 1 to move back the piezo near
 IA_TRAINING_SCALE_OPD = 0.001 # scale for piezo random walk during IA training
 IA_TRAINING_SCALE_DA = 0.01 # scale for piezo random walk during IA training
 
-SERVO_WALK_NORMALIZE_TIME = 60.0 # s, time to record values for normalization coeffs computation during walk to opd
+SERVO_WALK_NORMALIZE_TIME = 15.0 # s, time to record values for normalization coeffs computation during walk to opd
+SERVO_WAIT_NORMALIZE_TIME = 15.0 # s, time to record values for normalization coeffs computation during walk to opd
+
+WAITING_PIEZO_PERIOD = 60 # s, period of the piezo in waiting mode

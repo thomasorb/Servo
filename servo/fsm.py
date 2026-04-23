@@ -24,6 +24,7 @@ class ServoState(IntEnum):
     STOPPED = auto()
     TRACKING = auto()
     WALKING = auto()
+    WAITING = auto()
 
 class WorkerState(IntEnum):
     IDLE = auto()

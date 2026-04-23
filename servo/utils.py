@@ -45,6 +45,16 @@ def simulate_sin(n):
 def sinus(t, A, f, phi, C):
     return A * np.sin(2*np.pi*f*t + phi) + C
 
+import numpy as np
+
+def triangle(t, A, p):
+    t = np.asarray(t, dtype=np.float64)  # compute in float64 for numeric stability
+
+    p = abs(p)
+    A = abs(A)
+    
+    u = np.mod((t) / p, 1.0) # [0, 1)
+    return A * (1.0 - 4.0 * np.abs(u - 0.5)) # [-A, A]
 
 def estimate_frequency_fft(y, zp_ratio=10):
     

@@ -104,6 +104,7 @@ class IRCamera(core.Worker):
         self.dev.setFps(target_fps)
         self.dev.updateConfig()  #Data is sent to the device
         log.info(f"current fps: {self.dev.fps()}")
+        self.data['IRCamera.target_fps'][0] = self.dev.fps()
 
         # Set pipeline 
         #self.agc = NITLibrary.NITToolBox.NITAutomaticGainControl()
@@ -241,6 +242,9 @@ class DataObserver(NITLibrary.NITUserObserver):
         self.roinorm_mean = None
         self.roinorm_mask = None
 
+        self.last_frame_time = None
+        self.target_fps = self.data['IRCamera.target_fps'][0]
+        
         gc.freeze()
         gc.disable()
 
@@ -250,13 +254,20 @@ class DataObserver(NITLibrary.NITUserObserver):
         
 
     def onNewFrame(self, frame):
-        try:
-            frame_time = time.perf_counter()
+        try:                
             frame_id = int(frame.id())
             if frame_id <= self.last_id:
                 return
             else:
                 self.last_id = frame_id
+
+            frame_time = time.perf_counter()
+            if self.last_frame_time is not None:
+                if frame_time - self.last_frame_time > 1/self.target_fps:
+                    self.last_frame_time = frame_time
+                    return
+                
+            self.last_frame_time = frame_time
                 
             index = frame_id - 1
             
@@ -266,13 +277,11 @@ class DataObserver(NITLibrary.NITUserObserver):
             # get stats when buffer fulled
             if index > self.stats_last_index + self.times.size: # buffers were fulled
                 self.stats_last_index = (index // self.times.size) * self.times.size               
-                diff_ids = np.diff(self.ids)
                 mean_sampling_time = float(
-                    (np.nanmax(self.times) - np.nanmin(self.times)) / np.sum(
-                        ~np.isnan(self.times)))
+                    (np.nanmax(self.times) - np.nanmin(self.times)) / len(self.times))
                 self.arr_mean_sampling_time[0] = mean_sampling_time
                 self.arr_fps[0] = 1/mean_sampling_time
-                self.arr_lost_frames[0] = int(np.sum(diff_ids > 1))
+                self.arr_lost_frames[0] = int(np.sum(np.isnan(self.ids)))
                 self.times.fill(np.nan)
                 self.ids.fill(np.nan)
 
@@ -423,8 +432,7 @@ class DataObserver(NITLibrary.NITUserObserver):
                     self.data['Servo.is_lost'][0] = float(True)
 
             if np.isfinite(mean_opd):
-                self.last_mean_opd = float(mean_opd)
-                
+                self.last_mean_opd = float(mean_opd)                
             
             if compute_servo_output:
                 

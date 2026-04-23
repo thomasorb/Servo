@@ -38,19 +38,22 @@ OPD_TOLERANCE = 5.0  # nm
 PIEZO_MAX_OPD_DIFF = 5000 # nm
 
 
-SERVO_CPU_VIEWER = 1
+SERVO_CPU_VIEWER = 0,1
 SERVO_CPU_DEFAULT = 0
-SERVO_CPU_IRCAM = 2
+SERVO_CPU_IRCAM = 2,3
 
 SERVO_BUFFER_SIZE = 20 # for servo values buffering: servo updates are based on mean of this buffer
 SERVO_NORMALIZE_REC_TIME = 1.0 # s, time to record values for normalization coeffs computation
 SERVO_NORMALIZE_REC_SIZE = 10000 # s, time to record values for normalization coeffs computation
+
 VIEWER_BUFFER_SIZE = 1000 # for viewer servo values buffering
+VIEWER_REFRESH_PERIOD = 200 # ms, time to refresh viewer values
+
 SERVO_DEFAULT_NICENESS = 0
 SERVO_MAX_NICENESS = -20
 SERVO_LOW_NICENESS = 15
 SERVO_OPD_TIMEOUT = 5.0 # s
-SERVO_NONCRITIC_REFRESH_TIME = 1 # s, time to refresh servo config (PID coeffs, etc.)
+SERVO_NONCRITIC_REFRESH_TIME = 1. # s, time to refresh servo config (PID coeffs, etc.)
 
 VIEWER_ELLIPSE_DRAW_BUFFER_SIZE = 100
 
@@ -83,6 +86,8 @@ SERVO_EVENTS = (
     'walk_to_opd',
     'stop_walking',
     'calibrate_velocity',
+    'start_waiting',
+    'stop_waiting',
 )
 
 NEXLINE_EVENTS = (
@@ -108,3 +113,4 @@ NEXLINE_MAX_VELOCITY = 50
 NEXLINE_POS_CALIB_FACTOR = 1.
 NEXLINE_NEG_CALIB_FACTOR = 1.
 
+WAITING_PIEZO_AMPLITUDE = 2 # V, amplitude of the piezo in waiting mode
