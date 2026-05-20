@@ -2,6 +2,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import scipy.optimize
 import numba as nb
+import math
 
 from . import config
 
@@ -106,13 +107,18 @@ def get_min_max(y, plot=False, sinfit=False):
 def get_normalization_coeffs(profiles):
     coeffs = list()
     for i in range(profiles.shape[1]):
-        isin = profiles[int(len(profiles)*config.NORMALIZATION_LEN_RATIO):,i]
+        isin = profiles[-int(len(profiles)*config.NORMALIZATION_LEN_RATIO):,i]
         coeffs.append(get_min_max(isin, plot=False))
     return np.array(coeffs)
 
 def get_roi_normalization_coeffs(rois):
-    vmin, vmax = np.nanpercentile(rois[:int(len(rois)*config.NORMALIZATION_LEN_RATIO),::], [4,96], axis=0)
+    vmin, vmax = np.nanpercentile(rois[-int(len(rois)*config.NORMALIZATION_LEN_RATIO):,::], [4,96], axis=0)
     return vmin, vmax
+
+@nb.njit(cache=True, fastmath=True)
+def normalize_roi(roi, roinorm_min, roinorm_amp):
+    return np.clip((roi - roinorm_min) / (roinorm_amp + 1e-8), 0, 1)
+
 
 
 @nb.njit(cache=True, fastmath=True)
@@ -352,6 +358,33 @@ def validate_roi_position(position):
     return position
     
 
+# def get_pixels_lists(states):
+#     left = list()
+#     center = list()
+#     right = list()
+#     center_passed = False
+#     for i in range(len(states)):
+#         if states[i] == 1:
+#             if not center_passed:
+#                 left.append(i)
+#             else:
+#                 right.append(i)
+                
+#         elif states[i] == 2:
+#             center.append(i)
+#             if not center_passed:
+#                 center_passed = True
+
+#     left = np.ascontiguousarray(left, dtype=np.int32)
+#     center = np.ascontiguousarray(center, dtype=np.int32)
+#     right = np.ascontiguousarray(right, dtype=np.int32)
+
+#     #side = np.ascontiguousarray(np.concatenate((left, right)), dtype=np.int32)
+#     #center_left = center[:2]
+#     #center_right = center[-2:]
+#     #return center_left, side, center_right
+#     return left, center, right
+
 def get_pixels_lists(states):
     left = list()
     center = list()
@@ -373,11 +406,11 @@ def get_pixels_lists(states):
     center = np.ascontiguousarray(center, dtype=np.int32)
     right = np.ascontiguousarray(right, dtype=np.int32)
 
-    #side = np.ascontiguousarray(np.concatenate((left, right)), dtype=np.int32)
+    side = np.ascontiguousarray(np.concatenate((left, right)), dtype=np.int32)
     #center_left = center[:2]
     #center_right = center[-2:]
     #return center_left, side, center_right
-    return left, center, right
+    return side, center
 
 def get_mean_pixels_positions(pixels_lists):
     pos = list()
@@ -432,98 +465,146 @@ def normalize_profile(a, vmin, vmax, inplace=False):
 
 
 
-@nb.njit(fastmath=True, cache=True)
-def normalize_and_compute_profile_level(a, vmin, vmax, pixels_list):
-    """
-    Calcule la moyenne des valeurs normalisées et clampées sur les indices de pixels_list.
-    Hypothèses:
-      - a, vmin, vmax: float32 1D contigus (même taille)
-      - pixels_list: int32 1D contigu
-    Retour: float32 (moyenne sur pixels_list)
-    """
-    m = pixels_list.size
-    if m == 0:
-        return np.float32(0.0)
+# @nb.njit(fastmath=True, cache=True)
+# def normalize_and_compute_profile_level(a, vmin, vmax, pixels_list):
+#     """
+#     Calcule la moyenne des valeurs normalisées et clampées sur les indices de pixels_list.
+#     Hypothèses:
+#       - a, vmin, vmax: float32 1D contigus (même taille)
+#       - pixels_list: int32 1D contigu
+#     Retour: float32 (moyenne sur pixels_list)
+#     """
+#     m = pixels_list.size
+#     if m == 0:
+#         return np.float32(0.0)
 
-    acc = 0.0  # double interne pour sommation plus stable, retourné en float32
-    for j in range(m):
-        i = pixels_list[j]
-        # Accès local -> variables locales pour limiter les lectures RAM
-        ai   = a[i]
-        vmin_i = vmin[i]
-        vmax_i = vmax[i]
-        denom = vmax_i - vmin_i
+#     acc = 0.0  # double interne pour sommation plus stable, retourné en float32
+#     for j in range(m):
+#         i = pixels_list[j]
+#         # Accès local -> variables locales pour limiter les lectures RAM
+#         ai   = a[i]
+#         vmin_i = vmin[i]
+#         vmax_i = vmax[i]
+#         denom = vmax_i - vmin_i
 
-        if denom <= 0.0:
-            x = 0.0
-        else:
-            x = (ai - vmin_i) / denom
-            # clamp manuel (plus rapide qu'un appel fonction dans la boucle)
-            if x < 0.0:
-                x = 0.0
-            elif x > 1.0:
-                x = 1.0
+#         if denom <= 0.0:
+#             x = 0.0
+#         else:
+#             x = (ai - vmin_i) / denom
+#             # clamp manuel (plus rapide qu'un appel fonction dans la boucle)
+#             if x < 0.0:
+#                 x = 0.0
+#             elif x > 1.0:
+#                 x = 1.0
 
-        acc += x
+#         acc += x
 
-    return np.float32(acc / m)
+#     return np.float32(acc / m)
 
-@nb.njit(fastmath=True, cache=True)
-def batch_normalize_and_levels(a, vmin, vmax, pixels_lists):
-    out = np.empty(3, dtype=np.float32)
-    for k in range(3):
-        pix = pixels_lists[k]
-        m = pix.size
-        if m == 0:
-            out[k] = 0.0
-            continue
-        acc = 0.0
-        for j in range(m):
-            i = pix[j]
-            denom = vmax[i] - vmin[i]
-            if denom <= 0.0:
-                x = 0.0
-            else:
-                x = (a[i] - vmin[i]) / denom
-                if x < 0.0: x = 0.0
-                elif x > 1.0: x = 1.0
-            acc += x
-        out[k] = np.float32(acc / m)
-    return out
+# @nb.njit(fastmath=True, cache=True)
+# def batch_normalize_and_levels(a, vmin, vmax, pixels_lists):
+#     out = np.empty(3, dtype=np.float32)
+#     for k in range(3):
+#         pix = pixels_lists[k]
+#         m = pix.size
+#         if m == 0:
+#             out[k] = 0.0
+#             continue
+#         acc = 0.0
+#         for j in range(m):
+#             i = pix[j]
+#             denom = vmax[i] - vmin[i]
+#             if denom <= 0.0:
+#                 x = 0.0
+#             else:
+#                 x = (a[i] - vmin[i]) / denom
+#                 if x < 0.0: x = 0.0
+#                 elif x > 1.0: x = 1.0
+#             acc += x
+#         out[k] = np.float32(acc / m)
+#     return out
 
+
+@nb.njit(cache=True, fastmath=False)
 def compute_profile_levels(profile, pixels_lists, mean=True):
-    left_level = profile[pixels_lists[0]]
-    center_level = profile[pixels_lists[1]]
-    right_level = profile[pixels_lists[2]]
+    #left_level = profile[pixels_lists[0]]
+    #center_level = profile[pixels_lists[1]]
+    #right_level = profile[pixels_lists[2]]
 
     if mean:
-        return np.mean(left_level), np.mean(center_level), np.mean(right_level)
+        side_level = np.mean(profile[pixels_lists[0]])
+        center_level = np.mean(profile[pixels_lists[1]])
     else:
-        return np.median(left_level), np.median(center_level), np.median(right_level)
+        side_level = np.median(profile[pixels_lists[0]])
+        center_level = np.median(profile[pixels_lists[1]])
 
+    center_levels = profile[pixels_lists[1]]
+    
+    return np.concatenate((np.array([side_level, center_level]), center_levels))
 
 def compute_profiles_levels(profiles, normalization_coeffs, pixels_lists):
     """Return an array of levels for each profile in profiles."""
     levels = list()
     for i in range(profiles.shape[0]):
-        inorm = normalize_profile(profiles[i],
-                                  normalization_coeffs[:,0],
-                                  normalization_coeffs[:,1])
+        if normalization_coeffs is not None:
+            inorm = normalize_profile(profiles[i],
+                                      normalization_coeffs[:,0],
+                                      normalization_coeffs[:,1])
+        else:
+            inorm = profiles[i]
         levels.append(compute_profile_levels(inorm, pixels_lists, mean=True))
     return np.array(levels)
 
-def get_ellipse_normalization_coeffs(profiles, normalization_coeffs, pixels_lists):
-    levels = compute_profiles_levels(profiles, normalization_coeffs, pixels_lists)
-    levels = levels[int(config.NORMALIZATION_LEN_RATIO*len(levels)):,:]
-    low_center_level, high_center_level = np.nanpercentile(levels[:,1], [1, 99])
+def get_ellipse_normalization_coeffs(profiles, pixels_lists):
+    PERCS = [2, 98]
+    levels = compute_profiles_levels(profiles, None, pixels_lists)
+    levels = levels[-int(config.NORMALIZATION_LEN_RATIO*len(levels)):,:]
+    low_center_level, high_center_level = np.nanpercentile(levels[:,1], PERCS)
+
+    norm = np.ones(3, dtype=float)
+    norm[:2] = (np.nanmean(levels[np.nonzero(levels[:,1] <= low_center_level),0]),
+                np.nanmean(levels[np.nonzero(levels[:,1] >= high_center_level),0]))
     
-    left_norm = (np.nanmean(levels[np.nonzero(levels[:,1] <= low_center_level),0]),
-                 np.nanmean(levels[np.nonzero(levels[:,1] >= high_center_level),0]))
+    levels_norm = normalize_ellipses(levels, norm)
 
-    right_norm = (np.nanmean(levels[np.nonzero(levels[:,1] <= low_center_level),2]),
-                  np.nanmean(levels[np.nonzero(levels[:,1] >= high_center_level),2]))
+    norm[2] = 0.5/np.mean(np.abs(np.percentile(levels_norm[:,0], PERCS)))
+    return norm
 
-    return np.array(list(left_norm) + list(right_norm))
+
+# def compute_profiles_levels(profiles, normalization_coeffs, pixels_lists):
+#     """Return an array of levels for each profile in profiles."""
+#     levels = list()
+#     for i in range(profiles.shape[0]):
+#         if normalization_coeffs is not None:
+#             inorm = normalize_profile(profiles[i],
+#                                       normalization_coeffs[:,0],
+#                                       normalization_coeffs[:,1])
+#         else:
+#             inorm = profiles[i]
+#         levels.append(compute_profile_levels(inorm, pixels_lists, mean=True))
+#     return np.array(levels)
+
+# def get_ellipse_normalization_coeffs(profiles, pixels_lists):
+#     PERCS = [2, 98]
+#     levels = compute_profiles_levels(profiles, None, pixels_lists)
+#     levels = levels[-int(config.NORMALIZATION_LEN_RATIO*len(levels)):,:]
+#     low_center_level, high_center_level = np.nanpercentile(levels[:,1], PERCS)
+
+#     left_norm = (np.nanmean(levels[np.nonzero(levels[:,1] <= low_center_level),0]),
+#                  np.nanmean(levels[np.nonzero(levels[:,1] >= high_center_level),0]))
+
+#     right_norm = (np.nanmean(levels[np.nonzero(levels[:,1] <= low_center_level),2]),
+#                   np.nanmean(levels[np.nonzero(levels[:,1] >= high_center_level),2]))
+
+#     hnorm = np.array(list(left_norm) + list(right_norm))
+#     hnorm = np.concatenate((hnorm, np.array([1,1])))
+    
+#     levels_norm = normalize_ellipses(levels, hnorm)
+#     hnorm[4] = 0.5/np.mean(np.abs(np.percentile(levels_norm[:,0], PERCS)))
+#     hnorm[5] = 0.5/np.mean(np.abs(np.percentile(levels_norm[:,2], PERCS)))
+#     return hnorm
+
+
 
 @nb.njit(cache=True, fastmath=False)
 def unwrap_scalar_2pi(angle, last_angle):
@@ -540,21 +621,57 @@ def unwrap_scalar_2pi(angle, last_angle):
 
     return np.float32(la + delta)
 
+# @nb.njit(cache=True, fastmath=True)
+# def normalize_ellipse(levels, ellipse_norm_coeffs):
+#     l0 = levels[0] - levels[1] * (ellipse_norm_coeffs[1] - ellipse_norm_coeffs[0]) - ellipse_norm_coeffs[0]
+#     l2 = levels[2] - levels[1] * (ellipse_norm_coeffs[3] - ellipse_norm_coeffs[2]) - ellipse_norm_coeffs[2]
+#     l1 = levels[1] - 0.5
+
+#     l0 *= ellipse_norm_coeffs[4]
+#     l2 *= ellipse_norm_coeffs[5]
+
+#     return l0, l1, l2
+
+# @nb.njit(cache=True, fastmath=True)
+# def normalize_ellipses(all_levels, ellipse_norm_coeffs):
+#     n = all_levels.shape[0]
+#     out = np.empty((n, 3), dtype=np.float32)
+#     for i in range(n):
+#         l0, l1, l2 = normalize_ellipse(all_levels[i], ellipse_norm_coeffs)
+#         out[i, 0] = l0
+#         out[i, 1] = l1
+#         out[i, 2] = l2
+#     return out
 @nb.njit(cache=True, fastmath=True)
-def compute_angles(levels, ellipse_norm_coeffs, last_angles):
+def normalize_ellipse(levels, ellipse_norm_coeffs):
     l0 = levels[0] - levels[1] * (ellipse_norm_coeffs[1] - ellipse_norm_coeffs[0]) - ellipse_norm_coeffs[0]
-    l2 = levels[2] - levels[1] * (ellipse_norm_coeffs[3] - ellipse_norm_coeffs[2]) - ellipse_norm_coeffs[2]
     l1 = levels[1] - 0.5
 
-    return (unwrap_scalar_2pi(np.arctan2(l0, l1), last_angles[0]),
-            unwrap_scalar_2pi(np.arctan2(l2, l1), last_angles[1]))
+    l0 *= ellipse_norm_coeffs[2]
+    return np.array((l0, l1)) # side, center
 
-import numba as nb
-import numpy as np
-import math
+@nb.njit(cache=True, fastmath=True)
+def normalize_ellipses(all_levels, ellipse_norm_coeffs):
+    n = all_levels.shape[0]
+    out = np.empty((n, 2), dtype=np.float32)
+    for i in range(n):
+        l0, l1 = normalize_ellipse(all_levels[i], ellipse_norm_coeffs)
+        out[i, 0] = l0
+        out[i, 1] = l1
+    return out
+
+@nb.njit(cache=True, fastmath=True)
+def compute_angles(levels, ellipse_norm_coeffs, last_angles):
+    levels_norm = levels.copy()
+    levels_norm[:2] = normalize_ellipse(levels[:2], ellipse_norm_coeffs)
+    levels_norm[2:] -= 0.5
+    angles = np.arctan2(levels_norm[0], levels_norm[1:])
+    out = np.empty_like(angles, dtype=np.float32)
+    unwrap_2pi_vec(angles, last_angles, out)
+    return out
 
 
-@nb.njit(cache=True, fastmath=True, parallel=True)
+@nb.njit(cache=True, fastmath=True)
 def unwrap_2pi_vec(angles, last_angles, out):
     """
     Vectorized 2π unwrap: out[i] = unwrap(angles[i], last_angles[i])
@@ -575,35 +692,35 @@ def unwrap_2pi_vec(angles, last_angles, out):
         out[i] = np.float32(la + delta)
 
 
-@nb.njit(cache=True, fastmath=True, parallel=True)
-def compute_angles_ref_scalar(levels0, ref_level, ellipse_norm_coeffs, last_angles, out):
-    """
-    Compute and unwrap multiple angles from:
-      - levels0: 1D array of "levels[0]" values (size N)
-      - ref_level: scalar reference level (the equivalent of levels[1])
-      - ellipse_norm_coeffs: array-like with at least 2 elements [c0, c1]
-      - last_angles: 1D array (size N) of previous unwrapped angles
-      - out: preallocated float32 output (size N)
-    """
-    c0 = float(ellipse_norm_coeffs[0])
-    c1 = float(ellipse_norm_coeffs[1])
-    dc = c1 - c0
+# @nb.njit(cache=True, fastmath=True, parallel=True)
+# def compute_angles_ref_scalar(levels0, ref_level, ellipse_norm_coeffs, last_angles, out):
+#     """
+#     Compute and unwrap multiple angles from:
+#       - levels0: 1D array of "levels[0]" values (size N)
+#       - ref_level: scalar reference level (the equivalent of levels[1])
+#       - ellipse_norm_coeffs: array-like with at least 2 elements [c0, c1]
+#       - last_angles: 1D array (size N) of previous unwrapped angles
+#       - out: preallocated float32 output (size N)
+#     """
+#     c0 = float(ellipse_norm_coeffs[0])
+#     c1 = float(ellipse_norm_coeffs[1])
+#     dc = c1 - c0
 
-    ref = float(ref_level)
-    l1 = ref - 0.5  # constant for all i
+#     ref = float(ref_level)
+#     l1 = ref - 0.5  # constant for all i
 
-    n = levels0.size
-    for i in nb.prange(n):
-        # l0 = levels[0] - levels[1]*(c1-c0) - c0
-        l0 = float(levels0[i]) - ref * dc - c0
+#     n = levels0.size
+#     for i in nb.prange(n):
+#         # l0 = levels[0] - levels[1]*(c1-c0) - c0
+#         l0 = float(levels0[i]) - ref * dc - c0
 
-        ang = math.atan2(l0, l1)
+#         ang = math.atan2(l0, l1)
 
-        la = float(last_angles[i])
-        delta = ang - la
-        delta = delta - (2.0 * math.pi) * math.floor((delta + math.pi) / (2.0 * math.pi))
+#         la = float(last_angles[i])
+#         delta = ang - la
+#         delta = delta - (2.0 * math.pi) * math.floor((delta + math.pi) / (2.0 * math.pi))
 
-        out[i] = np.float32(la + delta)
+#         out[i] = np.float32(la + delta)
 
 
 @nb.njit(cache=True, fastmath=True)
@@ -620,42 +737,42 @@ def mean(a):
         
     return np.float32(b/n)
 
-@nb.njit(cache=True, fastmath=True)
-def copy_transpose_to_1d(src_2d, dst_1d):
-    """
-    Écrit src_2d.T aplati (ordre C) dans dst_1d sans allouer de temporaire.
-    Équivalent à dst_1d[:] = src_2d.T.ravel() mais sans créer l'intermédiaire.
-    """
-    nrows, ncols = src_2d.shape
-    k = 0
-    # Parcours colonne-par-colonne de src (équiv. à a.T.ravel(order='C'))
-    for c in range(ncols):
-        for r in range(nrows):
-            dst_1d[k] = src_2d[r, c]
-            k += 1
+# @nb.njit(cache=True, fastmath=True)
+# def copy_transpose_to_1d(src_2d, dst_1d):
+#     """
+#     Écrit src_2d.T aplati (ordre C) dans dst_1d sans allouer de temporaire.
+#     Équivalent à dst_1d[:] = src_2d.T.ravel() mais sans créer l'intermédiaire.
+#     """
+#     nrows, ncols = src_2d.shape
+#     k = 0
+#     # Parcours colonne-par-colonne de src (équiv. à a.T.ravel(order='C'))
+#     for c in range(ncols):
+#         for r in range(nrows):
+#             dst_1d[k] = src_2d[r, c]
+#             k += 1
 
-@nb.njit(cache=True, fastmath=False)
-def publish_timers_ns(timers_ns, timers_version, v0, v1, v2, v3, v4):
-    """
-    Atomically publish 5 int64 nanosecond durations into shared memory using a seqlock-like protocol.
-    Writer: increment version to odd, write, increment to even.
-    Readers: only trust even versions with same value before/after read.
-    """
-    # bump to odd
-    timers_version[0] += 1
-    if (timers_version[0] & 1) == 0:
-        timers_version[0] += 1
+# @nb.njit(cache=True, fastmath=False)
+# def publish_timers_ns(timers_ns, timers_version, v0, v1, v2, v3, v4):
+#     """
+#     Atomically publish 5 int64 nanosecond durations into shared memory using a seqlock-like protocol.
+#     Writer: increment version to odd, write, increment to even.
+#     Readers: only trust even versions with same value before/after read.
+#     """
+#     # bump to odd
+#     timers_version[0] += 1
+#     if (timers_version[0] & 1) == 0:
+#         timers_version[0] += 1
 
-    timers_ns[0] = v0
-    timers_ns[1] = v1
-    timers_ns[2] = v2
-    timers_ns[3] = v3
-    timers_ns[4] = v4
+#     timers_ns[0] = v0
+#     timers_ns[1] = v1
+#     timers_ns[2] = v2
+#     timers_ns[3] = v3
+#     timers_ns[4] = v4
 
-    # bump to next even
-    timers_version[0] += 1
-    if (timers_version[0] & 1) == 1:
-        timers_version[0] += 1
+#     # bump to next even
+#     timers_version[0] += 1
+#     if (timers_version[0] & 1) == 1:
+#         timers_version[0] += 1
 
 
 def mean_two_slices(a: np.ndarray, b: np.ndarray | None = None):

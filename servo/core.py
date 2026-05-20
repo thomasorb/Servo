@@ -144,10 +144,10 @@ class SharedData(object):
         self.add_array('IRCamera.hprofile_normalized', np.zeros(config.FULL_FRAME_SHAPE[0], dtype=config.FRAME_DTYPE))
         self.add_array('IRCamera.vprofile_normalized', np.zeros(config.FULL_FRAME_SHAPE[0], dtype=config.FRAME_DTYPE))
 
-        self.add_array('IRCamera.hprofile_levels', np.zeros(3, dtype=config.FRAME_DTYPE))
-        self.add_array('IRCamera.vprofile_levels', np.zeros(3, dtype=config.FRAME_DTYPE))
-        self.add_array('IRCamera.hprofile_levels_pos', np.zeros(3, dtype=config.FRAME_DTYPE))
-        self.add_array('IRCamera.vprofile_levels_pos', np.zeros(3, dtype=config.FRAME_DTYPE))
+        self.add_array('IRCamera.hprofile_levels', np.zeros(2, dtype=config.FRAME_DTYPE))
+        self.add_array('IRCamera.vprofile_levels', np.zeros(2, dtype=config.FRAME_DTYPE))
+        self.add_array('IRCamera.hprofile_levels_pos', np.zeros(2, dtype=config.FRAME_DTYPE))
+        self.add_array('IRCamera.vprofile_levels_pos', np.zeros(2, dtype=config.FRAME_DTYPE))
 
         self.add_value('IRCamera.profile_x', int(config.DEFAULT_PROFILE_POSITION[0]), stored=True)
         self.add_value('IRCamera.profile_y', int(config.DEFAULT_PROFILE_POSITION[1]), stored=True)
@@ -157,9 +157,9 @@ class SharedData(object):
         self.add_array('IRCamera.roi', np.zeros(config.FULL_FRAME_SIZE, dtype=config.FRAME_DTYPE))
         self.add_array('IRCamera.roi_normalized', np.zeros(config.FULL_FRAME_SIZE, dtype=config.FRAME_DTYPE))
 
-        self.add_array('IRCamera.angles', np.zeros(4, dtype=config.FRAME_DTYPE), stored=True)
-        self.add_array('IRCamera.last_angles', np.zeros(4, dtype=config.FRAME_DTYPE), stored=True)
-        self.add_array('IRCamera.opds', np.zeros(4, dtype=config.FRAME_DTYPE), stored=True)
+        #self.add_array('IRCamera.angles', np.zeros(4, dtype=config.FRAME_DTYPE), stored=True)
+        #self.add_array('IRCamera.last_angles', np.zeros(4, dtype=config.FRAME_DTYPE), stored=True)
+        self.add_array('IRCamera.opds', np.zeros(2, dtype=config.FRAME_DTYPE), stored=True)
         self.add_value('IRCamera.mean_opd', float(0.))
         self.add_value('IRCamera.mean_opd_offset', float(0.), stored=True)
         self.add_value('IRCamera.tip', float(0.), stored=True)
@@ -192,9 +192,9 @@ class SharedData(object):
                                                     dtype=config.FRAME_DTYPE), stored=True)
 
         self.add_array('Servo.hellipse_norm_coeffs',
-                       np.ones(4, dtype=config.FRAME_DTYPE), stored=True)
+                       np.ones(3, dtype=config.FRAME_DTYPE), stored=True)
         self.add_array('Servo.vellipse_norm_coeffs',
-                       np.ones(4, dtype=config.FRAME_DTYPE), stored=True)
+                       np.ones(3, dtype=config.FRAME_DTYPE), stored=True)
 
         
         self.add_value('Servo.opd_target', float(np.nan), stored=True)
@@ -254,6 +254,7 @@ class SharedData(object):
             self.add_value(f'Tracker.tilt_{ifreq_str}', float(np.nan), stored=False)
             self.add_value(f'Tracker.opd_std_{ifreq_str}', float(np.nan), stored=False)
             self.add_value(f'Tracker.velocity_{ifreq_str}', float(np.nan), stored=False)
+            self.add_value(f'Tracker.ir_image_intensity_{ifreq_str}', float(np.nan), stored=False)
 
         # FIR metrics
         self.add_value('FIR.short.tracking.e_opd', float(0), stored=False)
@@ -290,7 +291,7 @@ class SharedData(object):
                 log.warning(f'{name} could not be loaded from saved states')
             else:
                 init = np.array(self.state.get(name), dtype=array.dtype)
-                if np.any(np.isnan(init)):
+                if np.any(np.isnan(init)) or np.size(init) != np.size(array):
                     log.warning(f'{name} could not be loaded from saved states')
                 else:
                     array = init

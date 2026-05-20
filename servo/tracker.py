@@ -36,6 +36,7 @@ class Record():
         self.tilt = np.zeros(config.TRACKER_RECORD_SIZE)
         self.time = np.zeros(config.TRACKER_RECORD_SIZE)
         self.velocity = np.zeros(config.TRACKER_RECORD_SIZE)
+        self.ir_image_intensity = np.zeros(config.TRACKER_RECORD_SIZE)
         self.ir_image_shape = ir_image_shape
         self._init_ir_images()
         self.position = 0
@@ -46,7 +47,7 @@ class Record():
         self.ir_images_normalized = np.zeros_like(self.ir_images)        
         
 
-    def append(self, opd, tip, tilt, time, velocity, ir_image, ir_image_nomalized):
+    def append(self, opd, tip, tilt, time, velocity, ir_image, ir_image_nomalized, ir_image_intensity):
         self.opd[self.position] = opd
         self.tip[self.position] = tip
         self.tilt[self.position] = tilt
@@ -54,6 +55,7 @@ class Record():
         self.velocity[self.position] = velocity
         self.ir_images[self.position] = ir_image
         self.ir_images_normalized[self.position] = ir_image_nomalized
+        self.ir_image_intensity[self.position] = ir_image_intensity
         
         self.position += 1
         if self.position >= config.TRACKER_RECORD_SIZE:
@@ -77,6 +79,7 @@ class Record():
                 'tilt': self.tilt,
                 'velocity': self.velocity,
                 'time': self.time,
+                'ir_image_intensity': self.ir_image_intensity,
             }
             ir_cube = self.ir_images.copy()
             ir_cube_normalized = self.ir_images_normalized.copy()
@@ -87,6 +90,7 @@ class Record():
                 'tilt': self.tilt[:self.position],
                 'time': self.time[:self.position],
                 'velocity': self.velocity[:self.position],
+                'ir_image_intensity': self.ir_image_intensity[:self.position],
             }
             ir_cube = self.ir_images[:self.position].copy()
             ir_cube_normalized = self.ir_images_normalized[:self.position].copy()
@@ -226,27 +230,31 @@ class Tracker(core.Worker):
         else:
             velocity = np.nan
 
+        # meantime comes from time.perf_counter() and must be
+        # converted to a real timestamp by adding the start time of
+        # the tracker
+        meantimestamp = self.start_wall + (meantime - self.start_perf)
+        ir_image = self.data['IRCamera.roi'][:self.ir_image_size].copy()
+        ir_image = ir_image.reshape(self.ir_image_shape).T
+
+        ir_image_normalized = self.data['IRCamera.roi_normalized'][:self.ir_image_size].copy()
+        ir_image_normalized = ir_image_normalized.reshape(self.ir_image_shape).T
+
+        ir_image_intensity = np.sum(ir_image)#np.sum(ir_image[ir_image > np.percentile(ir_image, 99)])
+        self.data[f'Tracker.ir_image_intensity_{frequency_str}'][0] = ir_image_intensity
+
+        # detect roi size change
+        _profile_len = int(self.data['IRCamera.profile_len'][0])
+        if _profile_len != self.profile_len:
+            log.warning(f'IR image size changed from {self.ir_image_size} to {_profile_len}. Reinitializing IR image buffers.')
+            self._init_ir_image_specs()
+            self.record._init_ir_images()
+
+        
+
         if self.is_recording and frequency == config.TRACKER_RECORD_FREQUENCY:
-            # meantime comes from time.perf_counter() and must be
-            # converted to a real timestamp by adding the start time of
-            # the tracker
-            meantimestamp = self.start_wall + (meantime - self.start_perf)
-            ir_image = self.data['IRCamera.roi'][:self.ir_image_size].copy()
-            ir_image = ir_image.reshape(self.ir_image_shape).T
-
-            ir_image_normalized = self.data['IRCamera.roi_normalized'][:self.ir_image_size].copy()
-            ir_image_normalized = ir_image_normalized.reshape(self.ir_image_shape).T
-
-
-            # detect roi size change
-            _profile_len = int(self.data['IRCamera.profile_len'][0])
-            if _profile_len != self.profile_len:
-                log.warning(f'IR image size changed from {self.ir_image_size} to {_profile_len}. Reinitializing IR image buffers.')
-                self._init_ir_image_specs()
-                self.record._init_ir_images()
-
             self.record.append(meanopd, meantip, meantilt, meantimestamp, velocity,
-                               ir_image, ir_image_normalized)
+                               ir_image, ir_image_normalized, ir_image_intensity)
             
 
     def _start_recording(self, _):

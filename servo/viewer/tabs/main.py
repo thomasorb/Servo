@@ -7,6 +7,7 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from collections import deque
 from ..widgets.casebar import CaseBar
 from ... import config
+from ... import utils
 
 class MainTab:
     """Main image + profiles + ROI preview."""
@@ -290,30 +291,24 @@ class MainTab:
 
     # profiles update
     def update_profiles(self):
-        n = int(self.viewer.data['IRCamera.profile_len'][0])
-        hlevels = self.viewer.data['IRCamera.hprofile_levels'][:n]
-        vlevels = self.viewer.data['IRCamera.vprofile_levels'][:n]
-        hnorm = self.viewer.data['Servo.hellipse_norm_coeffs']
-        vnorm = self.viewer.data['Servo.vellipse_norm_coeffs']
+        hlevels = np.array(self.viewer.data['IRCamera.hprofile_levels'])
+        vlevels = np.array(self.viewer.data['IRCamera.vprofile_levels'])
+        hellipse_norm_coeffs = np.array(self.viewer.data['Servo.hellipse_norm_coeffs'])
+        vellipse_norm_coeffs = np.array(self.viewer.data['Servo.vellipse_norm_coeffs'])
 
-        def norm_levels(levels, norm):
-            l0 = levels[0] - levels[1] * (norm[1] - norm[0]) - norm[0]
-            l2 = levels[2] - levels[1] * (norm[3] - norm[2]) - norm[2]
-            l1 = levels[1] - 0.5
-            return np.array((l0, l1, l2))
-
-        hlevels_norm = norm_levels(hlevels, hnorm)
-        vlevels_norm = norm_levels(vlevels, vnorm)
-
+        hlevels_norm = utils.normalize_ellipse(hlevels, hellipse_norm_coeffs)
+        vlevels_norm = utils.normalize_ellipse(vlevels, vellipse_norm_coeffs)
         
-        hpos = self.viewer.data['IRCamera.hprofile_levels_pos'][:n]
-        vpos = self.viewer.data['IRCamera.vprofile_levels_pos'][:n]
+        hpos = self.viewer.data['IRCamera.hprofile_levels_pos']
+        vpos = self.viewer.data['IRCamera.vprofile_levels_pos']
+
+        n = int(self.viewer.data['IRCamera.profile_len'][0])
         if self.viewer.show_normalized:
-            horiz = self.viewer.data['IRCamera.hprofile_normalized'][:n]
-            vert  = self.viewer.data['IRCamera.vprofile_normalized'][:n]
+            hprofile = self.viewer.data['IRCamera.hprofile_normalized'][:n]
+            vprofile  = self.viewer.data['IRCamera.vprofile_normalized'][:n]
         else:
-            horiz = self.viewer.data['IRCamera.hprofile'][:n]
-            vert  = self.viewer.data['IRCamera.vprofile'][:n]
+            hprofile = self.viewer.data['IRCamera.hprofile'][:n]
+            vprofile  = self.viewer.data['IRCamera.vprofile'][:n]
 
         def draw(fig, ax, canvas, dat, title, levels, levels_pos):
             ax.clear()
@@ -338,14 +333,11 @@ class MainTab:
             def get_levels(index):
                 return [lvl[index] for lvl in levels]
             cen = get_levels(1)
-            left = get_levels(0)
-            right = get_levels(2)
+            side = get_levels(0)
             nbuf = min(config.VIEWER_ELLIPSE_DRAW_BUFFER_SIZE, len(cen))
             if len(cen):
-                ax.scatter(cen[0], left[0], color='tab:blue')
-                ax.scatter(cen[0], right[0], color='tab:orange')
-                ax.scatter(cen[:nbuf], left[:nbuf], color='tab:blue', alpha=0.2)
-                ax.scatter(cen[:nbuf], right[:nbuf], color='tab:orange', alpha=0.2)
+                ax.scatter(cen[0], side[0], color='tab:orange')
+                ax.scatter(cen[:nbuf], side[:nbuf], color='tab:orange', alpha=0.2)
             ax.set_xlim(-0.6, 0.6)
             ax.set_ylim(-0.6, 0.6)
             ax.set_xticks([]); ax.set_yticks([])
@@ -357,8 +349,8 @@ class MainTab:
                 ax.axhline(v, c='0.8' if v in (-0.5,0.5) else '0.5')
             canvas.draw()
 
-        draw(self.fig_h, self.ax_h, self.canvas_h, horiz, 'V profile', hlevels, hpos)
-        draw(self.fig_v, self.ax_v, self.canvas_v, vert,  'H profile', vlevels, vpos)
+        draw(self.fig_h, self.ax_h, self.canvas_h, hprofile, 'V profile', hlevels, hpos)
+        draw(self.fig_v, self.ax_v, self.canvas_v, vprofile,  'H profile', vlevels, vpos)
         self.hlevels_buf.appendleft(np.copy(hlevels_norm))
         self.vlevels_buf.appendleft(np.copy(vlevels_norm))
         draw_ellipse(self.fig_ellx, self.ax_ellx, self.canvas_ellx, self.hlevels_buf)

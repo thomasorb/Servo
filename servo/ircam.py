@@ -11,7 +11,7 @@ from . import core
 from . import config
 from . import utils
 
-from .faster import fast_copy_transpose, compute_profiles_local_f32, batch_normalize_and_levels, extract_roi_local_f32, batch_compute_levels_f32
+from . import faster
 
 log = logging.getLogger(__name__)
 
@@ -194,7 +194,6 @@ class DataObserver(NITLibrary.NITUserObserver):
         self.arr_tip        = self.data['IRCamera.tip']
         self.arr_tilt       = self.data['IRCamera.tilt']
         self.arr_full_output = self.data['IRCamera.full_output']
-        self.arr_angles = self.data['IRCamera.angles']
         
         # Servo coeffs
         self.arr_roinorm_min  = self.data['Servo.roinorm_min']
@@ -217,10 +216,14 @@ class DataObserver(NITLibrary.NITUserObserver):
         self.arr_mean_opd_offset = self.data['IRCamera.mean_opd_offset']
 
         # Preallocated workspaces to avoid per-frame allocations
-        self.last_angles = np.empty(4, dtype=config.DATA_DTYPE)
-        self.angles_ws  = np.empty(4, dtype=config.DATA_DTYPE)
-        self.hlevels_ws = np.empty(3, dtype=config.DATA_DTYPE)
-        self.vlevels_ws = np.empty(3, dtype=config.DATA_DTYPE)
+        self.hangles  = np.zeros(config.MIN_ROI_SHAPE, dtype=config.DATA_DTYPE)
+        self.hlast_angles = np.zeros(config.MIN_ROI_SHAPE, dtype=config.DATA_DTYPE)
+        self.vangles  = np.zeros(config.MIN_ROI_SHAPE, dtype=config.DATA_DTYPE)
+        self.vlast_angles = np.zeros(config.MIN_ROI_SHAPE, dtype=config.DATA_DTYPE)
+        self.hlevels = np.zeros(config.MIN_ROI_SHAPE, dtype=config.DATA_DTYPE)
+        self.vlevels = np.zeros(config.MIN_ROI_SHAPE, dtype=config.DATA_DTYPE)
+        self.hcenter_pixels_nb = None
+        self.vcenter_pixels_nb = None
         
 
         # Pixel lists cache
@@ -264,9 +267,12 @@ class DataObserver(NITLibrary.NITUserObserver):
             else:
                 self.last_id = frame_id
 
+            # skip frame if loop is too slow i.e. when the time
+            # interval between too consecutive frames is two times the
+            # target time (to maintain a stable fps)
             frame_time = time.perf_counter()
             if self.last_frame_time is not None:
-                if frame_time - self.last_frame_time > 1/self.target_fps:
+                if frame_time - self.last_frame_time > 2/self.target_fps:
                     self.last_frame_time = frame_time
                     return
                 
@@ -288,9 +294,11 @@ class DataObserver(NITLibrary.NITUserObserver):
                 self.times.fill(np.nan)
                 self.ids.fill(np.nan)
 
+            # read frame data as numpy array 
             frame_data = frame.data()  # native order, no transpose
-    
-            # --------- T0: viewer copy (and potential resize) ----------                
+
+            
+            # viewer output + check frame resize
             if ((frame_time - self.last_viewer_out_time > config.IRCAM_VIEWER_OUTPUT_TIME)
                 or (self.roinorm_min is None) or (self.roinorm_max is None)):
                 self.last_viewer_out_time = frame_time
@@ -305,7 +313,7 @@ class DataObserver(NITLibrary.NITUserObserver):
 
                 # Copy transposed view directly (no flatten temp)
                 # Keep the transpose to preserve viewer orientation
-                fast_copy_transpose(frame_data.astype(np.float32, copy=False),
+                faster.fast_copy_transpose(frame_data.astype(np.float32, copy=False),
                     self.arr_last_frame[:expected_size])
 
                 # Determine profile geometry
@@ -352,21 +360,20 @@ class DataObserver(NITLibrary.NITUserObserver):
             # correspond to (iy, ix) in the native space.
             #vprofile, hprofile, roi = utils.compute_profiles(
             #    frame_data, self.iy, self.ix, self.iwid, self.profile_len, get_roi=True)
-            roi = extract_roi_local_f32(
+            roi = faster.extract_roi_local_f32(
                 frame_data.astype(np.float32, copy=False),
                 int(self.iy), int(self.ix), int(self.profile_len))
 
             
-            
             # # --------- T2: normalization + levels + angles/opd ----------
                             
-            roi_norm = np.clip((roi - self.roinorm_min) / (self.roinorm_amp + 1e-8), 0, 1)
+            roi_norm = utils.normalize_roi(roi, self.roinorm_min, self.roinorm_amp)
                 
             ix_profile = self.profile_len//2 + int(self.data['IRCamera.profile_h_shift'][0])
             iy_profile = self.profile_len//2 + int(self.data['IRCamera.profile_v_shift'][0])
 
             mask = self.roinorm_max.astype(np.float32, copy=False) if self.roinorm_max is not None else None
-            vprofile_norm, hprofile_norm = compute_profiles_local_f32(
+            vprofile_norm, hprofile_norm = faster.compute_profiles_local_f32(
                 roi_norm.astype(np.float32, copy=False),
                 int(iy_profile), int(ix_profile), int(self.iwid), int(self.profile_len), get_roi=False, mask=mask)
             
@@ -402,28 +409,32 @@ class DataObserver(NITLibrary.NITUserObserver):
 
                 
             # now that normalized profiles are computed we can compute levels,
-            # using the potentially updated pixel lists            
-            self.hlevels_ws[:] = batch_compute_levels_f32(
-                hprofile_norm, self.xpixels_list[0], self.xpixels_list[1], self.xpixels_list[2])
-            
+            # using the potentially updated pixel lists
+            self.hcenter_pixels_nb = len(self.xpixels_list[1])
+            self.vcenter_pixels_nb = len(self.ypixels_list[1])
 
-            self.vlevels_ws[:] = batch_compute_levels_f32(
-                vprofile_norm, self.ypixels_list[0], self.ypixels_list[1], self.ypixels_list[2])
+            #faster.batch_compute_levels_f32(
+            # mean side, mean center, center_levels
+            self.hlevels[:self.hcenter_pixels_nb+2] = utils.compute_profile_levels(
+                hprofile_norm, self.xpixels_list)
             
+            self.vlevels[:self.vcenter_pixels_nb+2] = utils.compute_profile_levels(
+                vprofile_norm, self.ypixels_list)
             
+                        
             # Angles & OPD
-            self.angles_ws[:2] = utils.compute_angles(self.hlevels_ws,
-                                                      self.arr_hellipse[:4],
-                                                      #[0.,1.,0.,1.],
-                                                      self.last_angles[:2])
-            self.angles_ws[2:] = utils.compute_angles(self.vlevels_ws,
-                                                      self.arr_vellipse[:4],
-                                                      #[0.,1.,0.,1.],
-                                                      self.last_angles[2:])                
-                
-            opds = utils.compute_opds(self.angles_ws)
-            opds -= self.arr_mean_opd_offset[0]
-            mean_opd = utils.mean(opds)
+            # TODO: angles must be computed on ellipse normalized levels #############
+            ##########################################################################            
+            self.hangles[:self.hcenter_pixels_nb+1] = utils.compute_angles(
+                self.hlevels[:self.hcenter_pixels_nb+2], self.arr_hellipse, self.hlast_angles[:self.hcenter_pixels_nb+1])
+            self.vangles[:self.vcenter_pixels_nb+1] = utils.compute_angles(
+                self.vlevels[:self.vcenter_pixels_nb+2], self.arr_vellipse, self.vlast_angles[:self.vcenter_pixels_nb+1])
+            
+            hopd = utils.compute_opds(self.hangles[0])
+            vopd = utils.compute_opds(self.vangles[0])
+            opds = np.array((hopd, vopd), dtype=config.DATA_DTYPE)
+            mean_opd = (hopd + vopd) / 2
+            mean_opd -= self.arr_mean_opd_offset[0]
 
             # check for lost
             if self.last_mean_opd is not None and np.isfinite(mean_opd):
@@ -439,7 +450,7 @@ class DataObserver(NITLibrary.NITUserObserver):
                 self.arr_hprof_norm[:self.profile_len] = hprofile_norm
                 self.arr_vprof_norm[:self.profile_len] = vprofile_norm
 
-                vprofile, hprofile = compute_profiles_local_f32(
+                vprofile, hprofile = faster.compute_profiles_local_f32(
                     roi.astype(np.float32, copy=False),
                     int(iy_profile), int(ix_profile), int(self.iwid),
                     int(self.profile_len), get_roi=False, mask=mask)
@@ -451,19 +462,20 @@ class DataObserver(NITLibrary.NITUserObserver):
                 self.arr_roi_normalized[:roi_norm.size] = roi_norm.ravel()
 
                 # Levels & OPDs
-                self.arr_hlevels[:3] = self.hlevels_ws
-                self.arr_vlevels[:3] = self.vlevels_ws
-                self.arr_opds[:4] = opds.astype(config.FRAME_DTYPE)
+                self.arr_hlevels[:2] = self.hlevels[:2]
+                self.arr_vlevels[:2] = self.vlevels[:2]
+                
+                self.arr_opds[:2] = opds.astype(config.FRAME_DTYPE)
                 self.arr_mean_opd[0] = float(mean_opd)
-                self.arr_angles[:4] = np.mod(self.angles_ws, 2*np.pi).astype(config.FRAME_DTYPE)
 
-            tip = self.angles_ws[3] - self.angles_ws[2]
-            tilt = self.angles_ws[1] - self.angles_ws[0]
+            tip = np.mean(np.diff(self.hangles[1:self.hcenter_pixels_nb+1]))
+            tilt = np.mean(np.diff(self.vangles[1:self.vcenter_pixels_nb+1]))
             self.arr_tip[0]  = tip
             self.arr_tilt[0] = tilt
                 
                 
-            self.last_angles = self.angles_ws
+            self.hlast_angles = self.hangles
+            self.vlast_angles = self.vangles
             loop_time = time.perf_counter() - frame_time
             self.arr_loop_time[0] = loop_time
             self.arr_loop_fps[0] = 1./loop_time

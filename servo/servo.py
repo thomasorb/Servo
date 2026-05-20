@@ -19,6 +19,7 @@ from . import nexline
 from . import com
 from . import tracker
 from . import eventmanager
+from . import faster
 
 from .fsm import StateMachine, Transition, ServoState, NexlineState
 
@@ -239,14 +240,14 @@ class Servo(core.Worker):
 
                     u_pid_da1 = pid_da1_control.update(
                         control=self.data['DAQ.piezos_level'][1],
-                        setpoint=tip_target,
-                        measurement=tip)
-
-                    u_pid_da2 = pid_da2_control.update(
-                        control=self.data['DAQ.piezos_level'][2],
                         setpoint=tilt_target,
                         measurement=tilt)
-
+                    
+                    u_pid_da2 = pid_da2_control.update(
+                        control=self.data['DAQ.piezos_level'][2],
+                        setpoint=tip_target,
+                        measurement=tip)
+                    
                     e_opd  = opd_target  - opd
                     e_tip  = tip_target  - tip
                     e_tilt = tilt_target - tilt
@@ -256,11 +257,12 @@ class Servo(core.Worker):
                     self.data['DAQ.piezos_level'][0] = np.clip(
                         u_pid_opd + u_ff["OPD"], config.PIEZO_V_MIN, config.PIEZO_V_MAX)
 
-                    self.data['DAQ.piezos_level'][1] = np.clip(
-                        u_pid_da1 + u_ff["DA1"], da1_min, da1_max)
-
-                    self.data['DAQ.piezos_level'][2] = np.clip(
-                        u_pid_da2 + u_ff["DA2"], da2_min, da2_max)
+                    if bool(self.data['params.SERVO_DA_LOOP_ENABLED'][0]):
+                        self.data['DAQ.piezos_level'][1] = np.clip(
+                            u_pid_da1 + u_ff["DA1"], da1_min, da1_max)
+                        
+                        self.data['DAQ.piezos_level'][2] = np.clip(
+                            u_pid_da2 + u_ff["DA2"], da2_min, da2_max)
 
                     
                 else:
@@ -379,8 +381,6 @@ class Servo(core.Worker):
         end_value = 7
         recall_value = self.data['DAQ.piezos_level'][0]
 
-        rec_hprofiles = list()
-        rec_vprofiles = list()
         profile_len = self.data['IRCamera.profile_len'][0]
 
         rec_rois = list()
@@ -402,8 +402,6 @@ class Servo(core.Worker):
                     
                     self.data['DAQ.piezos_level'][0] = np.array(
                         ilevel, dtype=config.DAQ_PIEZO_LEVELS_DTYPE)
-                    rec_hprofiles.append(np.copy(self.data['IRCamera.hprofile'][:profile_len]))
-                    rec_vprofiles.append(np.copy(self.data['IRCamera.vprofile'][:profile_len]))
                     rec_rois.append(np.copy(self.data['IRCamera.roi'][:profile_len**2]).reshape((
                         profile_len, profile_len)))
                     
@@ -432,38 +430,53 @@ class Servo(core.Worker):
 
         piezo_goto(recall_value)
 
-        rec_hprofiles = np.array(rec_hprofiles)
-        rec_vprofiles = np.array(rec_vprofiles)
-        
-        hnorm = utils.get_normalization_coeffs(rec_hprofiles).astype(config.FRAME_DTYPE)
-        vnorm = utils.get_normalization_coeffs(rec_vprofiles).astype(config.FRAME_DTYPE)
-
         roinorm_min, roinorm_max = utils.get_roi_normalization_coeffs(
             np.array(rec_rois))
 
+        self.data['Servo.roinorm_min'][:profile_len**2] = roinorm_min.astype(config.FRAME_DTYPE).flatten()
+        self.data['Servo.roinorm_max'][:profile_len**2] = roinorm_max.astype(config.FRAME_DTYPE).flatten()
+
+        roinorm_amp = roinorm_max - roinorm_min
+        ix_profile = profile_len//2 + int(self.data['IRCamera.profile_h_shift'][0])
+        iy_profile = profile_len//2 + int(self.data['IRCamera.profile_v_shift'][0])
+        iwid = int(self.data['params.PROFILE_WIDTH'][0])
+        mask = roinorm_max.astype(np.float32, copy=False) if roinorm_max is not None else None
+
+        rec_hprofiles = list()
+        rec_vprofiles = list()
+        for iroi in rec_rois:
+            iroi_norm = utils.normalize_roi(iroi, roinorm_min, roinorm_amp)
+            ivprofile_norm, ihprofile_norm = faster.compute_profiles_local_f32(
+                iroi_norm.astype(np.float32, copy=False),
+                int(iy_profile), int(ix_profile), int(iwid),
+                int(profile_len), get_roi=False, mask=mask)
+            rec_hprofiles.append(ihprofile_norm)
+            rec_vprofiles.append(ivprofile_norm)
+                    
+        rec_hprofiles = np.array(rec_hprofiles)
+        rec_vprofiles = np.array(rec_vprofiles)
+        
         high_values = np.nanpercentile(roinorm_max, 99)
         if  high_values > 0.75:
             log.warning("High ROI normalization max value detected, may cause saturation: 99th percentile={:.3f}".format(high_values))
             
-        self.data['Servo.roinorm_min'][:profile_len**2] = roinorm_min.astype(config.FRAME_DTYPE).flatten()
-        self.data['Servo.roinorm_max'][:profile_len**2] = roinorm_max.astype(config.FRAME_DTYPE).flatten()
-
         # compute ellipse normalization coeffs
         hpixels_states = self.data['Servo.pixels_x']
         vpixels_states = self.data['Servo.pixels_y']        
         hpixels_lists = utils.get_pixels_lists(hpixels_states)
         vpixels_lists = utils.get_pixels_lists(vpixels_states)
-        
+        print("hpixels_lists:", hpixels_lists)
+        print("vpixels_lists:", vpixels_lists)
         
         hellipse_norm_coeffs = utils.get_ellipse_normalization_coeffs(
-            rec_hprofiles, hnorm, hpixels_lists)
+            rec_hprofiles, hpixels_lists)
         vellipse_norm_coeffs = utils.get_ellipse_normalization_coeffs(
-            rec_vprofiles, vnorm, vpixels_lists)
+            rec_vprofiles, vpixels_lists)
 
-        self.data['Servo.hellipse_norm_coeffs'][:4] = hellipse_norm_coeffs.astype(
+        self.data['Servo.hellipse_norm_coeffs'][:6] = hellipse_norm_coeffs.astype(
             config.DATA_DTYPE)
         
-        self.data['Servo.vellipse_norm_coeffs'][:4] = vellipse_norm_coeffs.astype(
+        self.data['Servo.vellipse_norm_coeffs'][:6] = vellipse_norm_coeffs.astype(
             config.DATA_DTYPE)
 
         try:
@@ -472,6 +485,28 @@ class Servo(core.Worker):
             np.save('rois.npy', np.array(rec_rois))
         except Exception as e:
             log.error(f"Failed to save normalization data: {e}")
+
+
+        # show levels before and after normalization for visual check
+        import matplotlib.pyplot as plt
+        def show_ellipse(ax, levels, title):
+            ax.scatter(levels[:,1], levels[:,0], alpha=0.1)
+            ax.axis('equal')
+            ax.grid()
+            ax.set_title(title)
+            
+        fig, axes = plt.subplots(2, 2, figsize=(12, 12))
+        hlevels = utils.compute_profiles_levels(np.array(rec_hprofiles), None, hpixels_lists)
+        show_ellipse(axes[0,0], hlevels, "V profiles levels before normalization")
+        hlevels_norm = utils.normalize_ellipses(hlevels, hellipse_norm_coeffs)
+        show_ellipse(axes[0,1], hlevels_norm, "V profiles levels after normalization")
+        
+        vlevels = utils.compute_profiles_levels(np.array(rec_vprofiles), None, vpixels_lists)
+        show_ellipse(axes[1,0], vlevels, "H profiles levels before normalization")
+        vlevels_norm = utils.normalize_ellipses(vlevels, vellipse_norm_coeffs)
+        show_ellipse(axes[1,1], vlevels_norm, "H profiles levels after normalization")
+        plt.show()
+
         
 
     def _reset_zpd(self, _):
@@ -998,13 +1033,13 @@ class DAController(object):
 
         self.data['DAQ.piezos_level'][1] = self.pid_da1_control.update(
             control=self.data['DAQ.piezos_level'][1],
-            setpoint=self.tip_target,
-            measurement=tip)
+            setpoint=self.tilt_target,
+            measurement=tilt)
         
         self.data['DAQ.piezos_level'][2] = self.pid_da2_control.update(
             control=self.data['DAQ.piezos_level'][2],
-            setpoint=self.tilt_target,
-            measurement=tilt)
+            setpoint=self.tip_target,
+            measurement=tip)
         
         self.da1_buffer.append(self.data['DAQ.piezos_level'][1])
         self.da2_buffer.append(self.data['DAQ.piezos_level'][2])

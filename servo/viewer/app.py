@@ -564,9 +564,9 @@ class Viewer(core.Worker):
         except Exception:
             drops = 0
             
-        s = (f"mean OPD: {utils.fwformat(mean_opd, 9)} nm | (std): {utils.fwformat(std_opd, 5, decimals=1)} nm",
-             f"velocity: {utils.fwformat(velocity, 9)} nm/s",
-             f"fps: {utils.fwformat(fps/1e3, 4, decimals=1)} kHz | loop fps: {utils.fwformat(loop_fps/1e3, 4, decimals=1)} kHz | drops: {drops}/{config.IRCAM_BUFFER_SIZE}")
+        s = (f"mean OPD:{utils.fwformat(mean_opd, 9)} nm | (std):{utils.fwformat(std_opd, 5, decimals=1)} nm",
+             f"velocity:{utils.fwformat(velocity, 9)} nm/s",
+             f"fps:{utils.fwformat(fps/1e3, 4, decimals=1)} kHz | loop:{utils.fwformat(loop_fps/1e3, 4, decimals=1)} kHz | drops:{drops:02d}/{config.IRCAM_BUFFER_SIZE}")
         self.status_var.set('\n'.join(s))
 
         # sync toolbar according to current state

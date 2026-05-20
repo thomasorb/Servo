@@ -35,5 +35,6 @@ IA_TRAINING_SCALE_DA = 0.01 # scale for piezo random walk during IA training
 
 SERVO_WALK_NORMALIZE_TIME = 15.0 # s, time to record values for normalization coeffs computation during walk to opd
 SERVO_WAIT_NORMALIZE_TIME = 15.0 # s, time to record values for normalization coeffs computation during walk to opd
+SERVO_DA_LOOP_ENABLED = True # whether to enable the DA loop when servoing to OPD
 
 WAITING_PIEZO_PERIOD = 60 # s, period of the piezo in waiting mode
