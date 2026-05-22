@@ -247,7 +247,7 @@ class Viewer(core.Worker):
                                         command=lambda: self._set_event('Servo.normalize'))
         self.normalize_btn.pack(side=tk.RIGHT, padx=10)
 
-        self.reset_zpd_btn = ttk.Button(toolbar, text='Reset ZPD', style='Orange.TButton',
+        self.reset_zpd_btn = ttk.Button(toolbar, text='Reset OPD', style='Orange.TButton',
                                         command=lambda: self._set_event('Servo.reset_zpd'))
         self.reset_zpd_btn.pack(side=tk.RIGHT, padx=10)
 
@@ -753,7 +753,7 @@ class Viewer(core.Worker):
         # ROI MODE (ROI/FF) transitions defined from RUNNING
         self._set_enabled(self.roi_mode_btn, st == ServoState.RUNNING)
 
-        # Reset ZPD only in OPEN LOOP
+        # Reset OPD only in OPEN LOOP
         self._set_enabled(self.reset_zpd_btn, st == ServoState.RUNNING)
 
         # Calibrate Velocity only in RUNNING

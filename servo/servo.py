@@ -381,6 +381,8 @@ class Servo(core.Worker):
         end_value = 7
         recall_value = self.data['DAQ.piezos_level'][0]
 
+        opd_init = self.data['IRCamera.mean_opd'][0]
+
         profile_len = self.data['IRCamera.profile_len'][0]
 
         rec_rois = list()
@@ -486,34 +488,43 @@ class Servo(core.Worker):
         except Exception as e:
             log.error(f"Failed to save normalization data: {e}")
 
+        # recall opd init in case changed were done during normalization
+        self.data['Servo.opd_target'][0] = opd_init
 
-        # show levels before and after normalization for visual check
-        import matplotlib.pyplot as plt
-        def show_ellipse(ax, levels, title):
-            ax.scatter(levels[:,1], levels[:,0], alpha=0.1)
-            ax.axis('equal')
-            ax.grid()
-            ax.set_title(title)
+        try:
+            # show levels before and after normalization for visual check
+            import matplotlib.pyplot as plt
+            def show_ellipse(ax, levels, title):
+                ax.scatter(levels[:,1], levels[:,0], alpha=0.1)
+                ax.axis('equal')
+                ax.grid()
+                ax.set_title(title)
+
+            fig, axes = plt.subplots(2, 2, figsize=(12, 12))
+            hlevels = utils.compute_profiles_levels(np.array(rec_hprofiles), None, hpixels_lists)
+            show_ellipse(axes[0,0], hlevels, "V profiles levels before normalization")
+            hlevels_norm = utils.normalize_ellipses(hlevels, hellipse_norm_coeffs)
+            show_ellipse(axes[0,1], hlevels_norm, "V profiles levels after normalization")
+
+            vlevels = utils.compute_profiles_levels(np.array(rec_vprofiles), None, vpixels_lists)
+            show_ellipse(axes[1,0], vlevels, "H profiles levels before normalization")
+            vlevels_norm = utils.normalize_ellipses(vlevels, vellipse_norm_coeffs)
+            show_ellipse(axes[1,1], vlevels_norm, "H profiles levels after normalization")
+            plt.show()
             
-        fig, axes = plt.subplots(2, 2, figsize=(12, 12))
-        hlevels = utils.compute_profiles_levels(np.array(rec_hprofiles), None, hpixels_lists)
-        show_ellipse(axes[0,0], hlevels, "V profiles levels before normalization")
-        hlevels_norm = utils.normalize_ellipses(hlevels, hellipse_norm_coeffs)
-        show_ellipse(axes[0,1], hlevels_norm, "V profiles levels after normalization")
-        
-        vlevels = utils.compute_profiles_levels(np.array(rec_vprofiles), None, vpixels_lists)
-        show_ellipse(axes[1,0], vlevels, "H profiles levels before normalization")
-        vlevels_norm = utils.normalize_ellipses(vlevels, vellipse_norm_coeffs)
-        show_ellipse(axes[1,1], vlevels_norm, "H profiles levels after normalization")
-        plt.show()
+        except Exception as e:
+            log.error(f"Failed to show normalization check plots: {e}")
 
         
 
     def _reset_zpd(self, _):
         log.info("ZPD Reset")
-        self.data['IRCamera.angles'][:4] = np.zeros(4, dtype=config.FRAME_DTYPE)
-        self.data['IRCamera.last_angles'][:4] = np.zeros(4, dtype=config.FRAME_DTYPE)
-        self.data['IRCamera.mean_opd_offset'][0] = float(0)
+        actual_opd = self.data['IRCamera.mean_opd'][0]
+        new_opd = self.data['Servo.opd_target'][0]
+        actual_offset = self.data['IRCamera.mean_opd_offset'][0]
+        new_offset = actual_opd + actual_offset - new_opd
+        log.info(f"   Actual OPD: {actual_opd} nm | New OPD target: {new_opd} nm | Previous offset: {actual_offset} nm | internal OPD: {actual_opd + actual_offset} |  Applying offset: {new_offset} nm")
+        self.data['IRCamera.mean_opd_offset'][0] = float(new_offset)
         
 
     def _center_piezos(self):

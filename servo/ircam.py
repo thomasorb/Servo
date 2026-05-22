@@ -430,11 +430,10 @@ class DataObserver(NITLibrary.NITUserObserver):
             self.vangles[:self.vcenter_pixels_nb+1] = utils.compute_angles(
                 self.vlevels[:self.vcenter_pixels_nb+2], self.arr_vellipse, self.vlast_angles[:self.vcenter_pixels_nb+1])
             
-            hopd = utils.compute_opds(self.hangles[0])
-            vopd = utils.compute_opds(self.vangles[0])
+            hopd = utils.compute_opds(self.hangles[0]) - self.arr_mean_opd_offset[0]
+            vopd = utils.compute_opds(self.vangles[0]) - self.arr_mean_opd_offset[0]
             opds = np.array((hopd, vopd), dtype=config.DATA_DTYPE)
             mean_opd = (hopd + vopd) / 2
-            mean_opd -= self.arr_mean_opd_offset[0]
 
             # check for lost
             if self.last_mean_opd is not None and np.isfinite(mean_opd):
