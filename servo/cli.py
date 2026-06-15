@@ -1,46 +1,34 @@
 #!/usr/bin/env python3
+
 import argparse
 import logging
 import traceback
-
 from . import logger
 from . import run
 
+
 def build_parser():
     """
-    Builds the top-level CLI parser with global logging options
-    and git-style subcommands: calib, run.
+    CLI parser with global logging options and subcommands.
     """
     parser = argparse.ArgumentParser(
         prog="servo",
         description="Servo command-line tool",
     )
 
-    # -------- Global logging options --------
+    # -------- Logging options --------
     parser.add_argument(
         "--log-level",
         default="INFO",
         choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
-        help="Set global log level.",
+        help="Set global log level",
     )
+
     parser.add_argument(
         "--log-file",
         default=None,
-        help="Override log file location.",
+        help="Override log file location",
     )
-    parser.add_argument(
-        "--no-redirect-std",
-        action="store_true",
-        help="Do not redirect print()/stderr to the logger.",
-    )
-
-    parser.add_argument(
-        "--theme",
-        default="pastel",
-        choices=["pastel", "soft", "mono"],
-        help="Console color theme for logs (default: pastel).",
-    )
-
 
     # -------- Subcommands --------
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -61,28 +49,37 @@ def build_parser():
 def main():
     """
     CLI entry point.
-    Initializes logging once, then dispatches to subcommands.
+    Initializes logging, then dispatches to subcommands.
     """
     parser = build_parser()
     args = parser.parse_args()
 
-    # Initialize global logging
-    logger.init_logging(
-        level=args.log_level,
-        log_file=args.log_file,
-        redirect_std=not args.no_redirect_std,
-        theme=args.theme
-    )
-
-    log = logging.getLogger(__name__)
-    log.info(f"CLI args: {args}")
-
     try:
+        # ✅ Init logging FIRST (critical)
+        logger.init_logging(
+            level=args.log_level,
+            log_file=args.log_file,
+        )
+
+        log = logging.getLogger(__name__)
+        log.info(f"CLI args: {args}")
+
+        # ✅ Dispatch
         if args.command == "calib":
-            return run.run(mode='calib', nocam=args.nocam, noviewer=args.noviewer)
+            return run.run(mode="calib", nocam=args.nocam, noviewer=args.noviewer)
+
         elif args.command == "run":
-            return run.run(mode='loop', nocam=args.nocam, noviewer=args.noviewer)
+            return run.run(mode="loop", nocam=args.nocam, noviewer=args.noviewer)
 
     except KeyboardInterrupt:
-        log.error(f'error during run: {traceback.format_exc()}')
+        logging.getLogger(__name__).warning("Interrupted by user")
 
+    except Exception:
+        # ✅ fallback safe (no recursion, no logger dependency)
+        print("Fatal error:")
+        traceback.print_exc()
+        raise
+
+
+if __name__ == "__main__":
+    main()

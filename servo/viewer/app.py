@@ -54,7 +54,7 @@ class Viewer(core.Worker):
             ]
         )
         
-        # orange: NORMALIZE, Reset TIP-TILT
+        # orange: NORMALIZE, Calibrate TIP-TILT
         style.configure(
             'Orange.TButton',
             foreground='black',
@@ -239,9 +239,9 @@ class Viewer(core.Worker):
                                    command=self.toggle_wait)
         self.wait_btn.pack(side=tk.RIGHT, padx=10)
 
-        self.reset_tiptilt_btn = ttk.Button(toolbar, text='Reset TIP-TILT', style='Yellow.TButton',
-                                            command=self._reset_tiptilt)
-        self.reset_tiptilt_btn.pack(side=tk.RIGHT, padx=10)
+        self.calibrate_tiptilt_btn = ttk.Button(toolbar, text='Calibrate TIP-TILT', style='Yellow.TButton',
+                                            command=lambda: self._set_event('Servo.calibrate_tip_tilt'))
+        self.calibrate_tiptilt_btn.pack(side=tk.RIGHT, padx=10)
 
         self.normalize_btn = ttk.Button(toolbar, text='NORMALIZE', style='Yellow.TButton',
                                         command=lambda: self._set_event('Servo.normalize'))
@@ -444,13 +444,6 @@ class Viewer(core.Worker):
             self._set_event('Servo.stop_waiting')
         else:
             self._set_event('Servo.start_waiting')
-
-    def _reset_tiptilt(self):
-        try:
-            self.data['Servo.tip_target'][0] = float(self.data['Tracker.tip_0.3'][0])
-            self.data['Servo.tilt_target'][0] = float(self.data['Tracker.tilt_0.3'][0])
-        except Exception:
-            pass
 
     # handlers (right)
     def on_opd_target_changed(self, *_):
@@ -747,8 +740,8 @@ class Viewer(core.Worker):
         # MOVE to OPD only in TRACKING
         self._set_enabled(self.move_to_opd_btn, st == ServoState.TRACKING)
 
-        # Reset TIP-TILT in RUNNING or TRACKING
-        self._set_enabled(self.reset_tiptilt_btn, st in (ServoState.RUNNING, ServoState.TRACKING))
+        # Calibrate TIP-TILT in RUNNING or TRACKING
+        self._set_enabled(self.calibrate_tiptilt_btn, st in (ServoState.RUNNING, ServoState.TRACKING))
 
         # ROI MODE (ROI/FF) transitions defined from RUNNING
         self._set_enabled(self.roi_mode_btn, st == ServoState.RUNNING)

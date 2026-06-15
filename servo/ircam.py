@@ -426,9 +426,13 @@ class DataObserver(NITLibrary.NITUserObserver):
             # TODO: angles must be computed on ellipse normalized levels #############
             ##########################################################################            
             self.hangles[:self.hcenter_pixels_nb+1] = utils.compute_angles(
-                self.hlevels[:self.hcenter_pixels_nb+2], self.arr_hellipse, self.hlast_angles[:self.hcenter_pixels_nb+1])
+                self.hlevels[:self.hcenter_pixels_nb+2],
+                self.arr_hellipse,
+                self.hlast_angles[:self.hcenter_pixels_nb+1])
             self.vangles[:self.vcenter_pixels_nb+1] = utils.compute_angles(
-                self.vlevels[:self.vcenter_pixels_nb+2], self.arr_vellipse, self.vlast_angles[:self.vcenter_pixels_nb+1])
+                self.vlevels[:self.vcenter_pixels_nb+2],
+                self.arr_vellipse,
+                self.vlast_angles[:self.vcenter_pixels_nb+1])
             
             hopd = utils.compute_opds(self.hangles[0]) - self.arr_mean_opd_offset[0]
             vopd = utils.compute_opds(self.vangles[0]) - self.arr_mean_opd_offset[0]
@@ -467,8 +471,9 @@ class DataObserver(NITLibrary.NITUserObserver):
                 self.arr_opds[:2] = opds.astype(config.FRAME_DTYPE)
                 self.arr_mean_opd[0] = float(mean_opd)
 
-            tip = np.mean(np.diff(self.hangles[1:self.hcenter_pixels_nb+1]))
-            tilt = np.mean(np.diff(self.vangles[1:self.vcenter_pixels_nb+1]))
+            tip = np.mean(np.diff(np.unwrap(self.hangles[1:self.hcenter_pixels_nb+1], discont=np.pi)))
+            tilt = np.mean(np.diff(np.unwrap(self.vangles[1:self.vcenter_pixels_nb+1], discont=np.pi)))
+            
             self.arr_tip[0]  = tip
             self.arr_tilt[0] = tilt
                 

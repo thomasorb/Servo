@@ -57,7 +57,10 @@ class StateMachine:
     def _publish_state(self, state=None):
         if state is None:
             state = self.state
-        log.info(f'{self.__class__.__name__}: entering state {state.name}')
+        try:
+            log.info(f'{self.__class__.__name__}: entering state {state.name}')
+        except Exception:
+            pass
 
     def dispatch(self, event, payload: Any = None) -> bool:
         if self.table is None:

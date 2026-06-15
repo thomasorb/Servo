@@ -88,6 +88,7 @@ SERVO_EVENTS = (
     'calibrate_velocity',
     'start_waiting',
     'stop_waiting',
+    'calibrate_tip_tilt',
 )
 
 NEXLINE_EVENTS = (

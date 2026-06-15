@@ -727,6 +727,12 @@ def unwrap_2pi_vec(angles, last_angles, out):
 def compute_opds(unwrapped_angles):
     return -config.CALIBRATION_LASER_WAVELENGTH * unwrapped_angles / (2*np.pi)
 
+def opd2angle(opd):
+    return -opd * (2*np.pi) / config.CALIBRATION_LASER_WAVELENGTH
+
+def opd2phase(opd):
+    return np.mod(opd2angle(opd), 2* np.pi)
+
 @nb.njit(cache=True, fastmath=True)
 def mean(a):
     n = a.size

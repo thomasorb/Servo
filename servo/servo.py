@@ -6,6 +6,7 @@ import psutil
 import logging
 import numpy as np
 import signal
+import scipy.interpolate
 
 from . import ircam
 from . import core
@@ -38,8 +39,10 @@ def worker_process(queue, data, WorkerClass, events, priority=None, kwargs=None)
     if kwargs is None:
         kwargs = {}
 
-    logger.configure_worker_logging(queue=queue, redirect_std=True)
+    logger.configure_worker_logging(queue=queue)
     log = logging.getLogger(f"servo.worker.{WorkerClass.__name__}")
+
+    log.info("Worker process started with PID %d", multiprocessing.current_process().pid)
     
     niceness = None
     cpus = None
@@ -118,7 +121,11 @@ class Servo(core.Worker):
             (ServoState.RUNNING, self.Event.NORMALIZE): Transition(
                 ServoState.RUNNING, action=self._normalize),
             (ServoState.TRACKING, self.Event.NORMALIZE): Transition(
-                ServoState.TRACKING, action=self._normalize),            
+                ServoState.TRACKING, action=self._normalize),
+            (ServoState.RUNNING, self.Event.CALIBRATE_TIP_TILT): Transition(
+                ServoState.RUNNING, action=self._calibrate_tip_tilt),
+            (ServoState.TRACKING, self.Event.CALIBRATE_TIP_TILT): Transition(
+                ServoState.TRACKING, action=self._calibrate_tip_tilt),    
             (ServoState.RUNNING, self.Event.STOP): Transition(
                 ServoState.STOPPED, action=self._stop),
             (ServoState.TRACKING, self.Event.MOVE_TO_OPD): Transition(
@@ -146,6 +153,8 @@ class Servo(core.Worker):
         }
         
         self.fir_short_mimo = None
+        self.tip_model = None
+        self.tilt_model = None
 
     def install_signal_handlers(self):
         """
@@ -175,12 +184,12 @@ class Servo(core.Worker):
         self.data['Servo.is_lost'][0] = float(False)
         
         opd_target = self.data['Servo.opd_target'][0]
-        tip_target = self.data['Servo.tip_target'][0] # associated with DA1
-        tilt_target = self.data['Servo.tilt_target'][0] # associated with DA2
-        
+        if self.tip_model is None or self.tilt_model is None:
+            log.error('tip/tilt models not calibrated, cannot track')
+            self.events['Servo.open_loop'].set()
+            return
+                
         log.info(f"   OPD target: {opd_target} nm")
-        log.info(f"   TIP target: {tip_target} radians")
-        log.info(f"   TILT target: {tilt_target} radians")
 
         da1_level_orig = self.data['DAQ.piezos_level'][1]
         da2_level_orig = self.data['DAQ.piezos_level'][2]
@@ -228,10 +237,16 @@ class Servo(core.Worker):
                     da2_buffer.clear()
                     last_update_time = time.time()
                         
-                opd = self.data['Tracker.opd_100'][0]
-                tip = self.data['Tracker.tip_1'][0]
-                tilt = self.data['Tracker.tilt_1'][0]
+                opd = float(self.data['Tracker.opd_100'][0])
+                tip = float(self.data['Tracker.tip_1'][0])
+                tilt = float(self.data['Tracker.tilt_1'][0])
 
+                phase = utils.opd2phase(opd)
+                tip_target = self.tip_model(phase)
+                tilt_target = self.tilt_model(phase)
+                self.data['Servo.tip_target'][0] = float(tip_target)
+                self.data['Servo.tilt_target'][0] = float(tilt_target)
+                                
                 if not np.isnan(opd):
                     u_pid_opd = pid_opd_control.update(
                         control=self.data['DAQ.piezos_level'][0],
@@ -373,6 +388,109 @@ class Servo(core.Worker):
                         break
             self.start_worker(viewer.Viewer, priority={"niceness": config.SERVO_DEFAULT_NICENESS, "cpus": config.SERVO_CPU_VIEWER})
 
+
+    def piezo_goto(self, val, rec=False, record_keys='roi'):
+
+        if record_keys == 'roi':
+            profile_len = self.data['IRCamera.profile_len'][0]
+        else:
+            assert type(record_keys) == list and len(record_keys) > 0, "record_keys should be a list of data keys to record"
+            
+        if not rec:
+            self.data['DAQ.piezos_level'][0] = np.array(
+                val, dtype=config.DAQ_PIEZO_LEVELS_DTYPE)
+        else:
+            rec_values = list()
+            self.data['IRCamera.full_output'][0] = float(1.0) # force full output for normalization recording
+            _goto_start_time = time.time()
+            _goto_start_level = self.data['DAQ.piezos_level_actual'][0]
+            levels = np.linspace(_goto_start_level, val, config.SERVO_NORMALIZE_REC_SIZE)
+            for ilevel in levels:
+
+                self.data['DAQ.piezos_level'][0] = np.array(
+                    ilevel, dtype=config.DAQ_PIEZO_LEVELS_DTYPE)
+                if record_keys == 'roi':
+                    rec_values.append(np.copy(self.data['IRCamera.roi'][:profile_len**2]).reshape((
+                        profile_len, profile_len)))
+                else:
+                    rec_values.append([float(self.data[ikey][0]) for ikey in record_keys])
+                        
+                time.sleep(config.SERVO_NORMALIZE_REC_TIME / config.SERVO_NORMALIZE_REC_SIZE)
+
+            self.data['IRCamera.full_output'][0] = float(0.)
+
+            self.data['DAQ.piezos_level'][0] = np.array(
+                val, dtype=config.DAQ_PIEZO_LEVELS_DTYPE)
+
+        while True:
+            self.poll()
+            if self.data['DAQ.piezos_level_actual'][0] == val:
+                break
+            if self.events['Servo.stop'].is_set():
+                break
+
+        log.info(f"OPD piezo at {self.data['DAQ.piezos_level_actual'][0]}")
+
+        if rec:
+            return np.array(rec_values)
+
+
+    def _calibrate_tip_tilt(self, _):
+        log.info("Calibrating Tip/Tilt")
+        
+        start_value = 3
+        end_value = 7
+        recall_value = self.data['DAQ.piezos_level'][0]
+
+        opd_init = self.data['IRCamera.mean_opd'][0]
+
+        self.piezo_goto(start_value)
+
+        tiptilt = self.piezo_goto(end_value, rec=True, record_keys=['IRCamera.mean_opd', 'IRCamera.tip', 'IRCamera.tilt'])
+
+        self.piezo_goto(recall_value)
+
+        try:
+            np.save('tiptilt.npy', np.array(tiptilt))
+        except Exception as e:
+            log.error(f"Failed to save tip-tilt calibration data: {e}")
+
+
+        opd = tiptilt[:,0]
+        tip = tiptilt[:,1]
+        tilt = tiptilt[:,2]
+        phase = utils.opd2phase(opd)
+
+        def modelize_periodic(x, y, n=50, coeff=1):
+            xbins = np.linspace(0, 2*np.pi, n)
+            w = xbins[1] - xbins[0]
+            ybins = list()
+            for ibin in xbins:
+                dist = np.mod(x - ibin+coeff*w/2, 2*np.pi)
+                weights = np.exp(-dist/w)
+                weights.fill(1)
+                ok = dist < w*coeff
+                ybins.append(np.sum(y[ok] * weights[ok])/np.sum(weights[ok]))
+            ymodel = scipy.interpolate.interp1d(xbins, ybins)
+            return ymodel
+    
+        self.tip_model = modelize_periodic(phase, tip)
+        self.tilt_model = modelize_periodic(phase, tilt)
+        
+        try:
+            import matplotlib.pyplot as plt
+            
+            plt.scatter(phase, tip, alpha=0.01)
+            plt.scatter(phase, tilt, alpha=0.01)
+            x = np.linspace(0, 2*np.pi, 1000)
+            plt.plot(x, self.tip_model(x), c='red')
+            plt.plot(x, self.tilt_model(x), c='red')
+            plt.show()
+        except Exception as e:
+            log.error(f"Failed to plot tip-tilt calibration data: {e}")
+
+        # recall opd init in case changed were done
+        self.data['Servo.opd_target'][0] = opd_init
         
     def _normalize(self, _):
         log.info("Normalizing")
@@ -385,52 +503,15 @@ class Servo(core.Worker):
 
         profile_len = self.data['IRCamera.profile_len'][0]
 
-        rec_rois = list()
         dimx = self.data['IRCamera.frame_dimx'][0]
         dimy = self.data['IRCamera.frame_dimy'][0]
         frame_size = self.data['IRCamera.frame_size'][0]
         
-        def piezo_goto(val, rec=False):
+        self.piezo_goto(start_value)
 
-            if not rec:
-                self.data['DAQ.piezos_level'][0] = np.array(
-                    val, dtype=config.DAQ_PIEZO_LEVELS_DTYPE)
-            else:
-                self.data['IRCamera.full_output'][0] = float(1.0) # force full output for normalization recording
-                _goto_start_time = time.time()
-                _goto_start_level = self.data['DAQ.piezos_level_actual'][0]
-                levels = np.linspace(_goto_start_level, val, config.SERVO_NORMALIZE_REC_SIZE)
-                for ilevel in levels:
-                    
-                    self.data['DAQ.piezos_level'][0] = np.array(
-                        ilevel, dtype=config.DAQ_PIEZO_LEVELS_DTYPE)
-                    rec_rois.append(np.copy(self.data['IRCamera.roi'][:profile_len**2]).reshape((
-                        profile_len, profile_len)))
-                    
-                    time.sleep(config.SERVO_NORMALIZE_REC_TIME / config.SERVO_NORMALIZE_REC_SIZE)
+        rec_rois = self.piezo_goto(end_value, rec=True)
 
-                self.data['IRCamera.full_output'][0] = float(0.)
-                
-                self.data['DAQ.piezos_level'][0] = np.array(
-                    val, dtype=config.DAQ_PIEZO_LEVELS_DTYPE)
-
-                
-            
-            while True:
-                self.poll()
-                if self.data['DAQ.piezos_level_actual'][0] == val:
-                    break
-                if self.events['Servo.stop'].is_set():
-                    break
-                
-                
-            log.info(f"OPD piezo at {self.data['DAQ.piezos_level_actual'][0]}")
-
-        piezo_goto(start_value)
-
-        piezo_goto(end_value, rec=True)
-
-        piezo_goto(recall_value)
+        self.piezo_goto(recall_value)
 
         roinorm_min, roinorm_max = utils.get_roi_normalization_coeffs(
             np.array(rec_rois))
@@ -515,6 +596,7 @@ class Servo(core.Worker):
         except Exception as e:
             log.error(f"Failed to show normalization check plots: {e}")
 
+
         
 
     def _reset_zpd(self, _):
@@ -556,7 +638,7 @@ class Servo(core.Worker):
 
         self._center_piezos()
 
-        dacontroller = DAController(self.data, mode='walking')
+        dacontroller = DAController(self.data, self.tip_model, self.tilt_model, mode='walking')
         
         # once OPD piezo is centered, a slow triangle move of the
         # piezo is made during the whole waiting process to enable the
@@ -626,7 +708,7 @@ class Servo(core.Worker):
         log.info(f"   Final OPD target: {final_opd_target} nm")
         log.info(f"   Velocity target: {velocity_target} um/s")
 
-        dacontroller = DAController(self.data, mode='walking')
+        dacontroller = DAController(self.data, self.tip_model, self.tilt_model, mode='walking')
         
         self._center_piezos()
         
@@ -991,7 +1073,10 @@ class Servo(core.Worker):
 
 
 class DAController(object):
-    def __init__(self, data, mode='walking'):
+    def __init__(self, data, tip_model, tilt_model, mode='walking'):
+
+        self.tip_model = tip_model
+        self.tilt_model = tilt_model
 
         if mode == 'walking':
             params_name = 'WALK'
@@ -1002,12 +1087,6 @@ class DAController(object):
 
         self.data = data
         
-        self.tip_target = float(self.data['Servo.tip_target'][0])
-        self.tilt_target = float(self.data['Servo.tilt_target'][0])
-        
-        log.info(f"   TIP target: {self.tip_target} radians")
-        log.info(f"   TILT target: {self.tilt_target} radians")
-
         self.da1_level_orig = float(self.data['DAQ.piezos_level'][1])
         self.da2_level_orig = float(self.data['DAQ.piezos_level'][2])
 
@@ -1039,17 +1118,24 @@ class DAController(object):
         self.last_refresh_time = time.perf_counter()
         
     def update(self):
+        opd = float(self.data['Tracker.opd_100'][0]) # nm
         tip = float(self.data['Tracker.tip_1'][0]) 
         tilt = float(self.data['Tracker.tilt_1'][0])
 
+        phase = utils.opd2phase(opd)
+        tip_target = self.tip_model(phase)
+        tilt_target = self.tilt_model(phase)
+        self.data['Servo.tip_target'][0] = float(tip_target)
+        self.data['Servo.tilt_target'][0] = float(tilt_target)
+                
         self.data['DAQ.piezos_level'][1] = self.pid_da1_control.update(
             control=self.data['DAQ.piezos_level'][1],
-            setpoint=self.tilt_target,
+            setpoint=tilt_target,
             measurement=tilt)
         
         self.data['DAQ.piezos_level'][2] = self.pid_da2_control.update(
             control=self.data['DAQ.piezos_level'][2],
-            setpoint=self.tip_target,
+            setpoint=tip_target,
             measurement=tip)
         
         self.da1_buffer.append(self.data['DAQ.piezos_level'][1])
