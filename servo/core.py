@@ -198,9 +198,14 @@ class SharedData(object):
 
         
         self.add_value('Servo.opd_target', float(np.nan), stored=True)
-        self.add_value('Servo.tip_target', float(0.), stored=True)
-        self.add_value('Servo.tilt_target', float(0.), stored=True)
+        self.add_value('Servo.tip_target', float(0.), stored=False)
+        self.add_value('Servo.tilt_target', float(0.), stored=False)
         self.add_value('Servo.velocity_target', float(config.NEXLINE_MOVING_VELOCITY), stored=True)
+        self.add_value('Servo.e_opd', float(np.nan), stored=False)
+        self.add_value('Servo.e_tip', float(0.), stored=False)
+        self.add_value('Servo.e_tilt', float(0.), stored=False)
+        self.add_value('Servo.e_velocity', float(config.NEXLINE_MOVING_VELOCITY), stored=False)
+
 
         self.add_value('Servo.is_lost', True, stored=False)
         self.add_value('Servo.track_loop_time', float(np.nan), stored=False)

@@ -93,6 +93,10 @@ class BuffersTab:
         presets.pack(fill=tk.X, pady=(0, 8))
         ttk.Button(presets, text='OPD', command=self._preset_opd_mean).pack(side=tk.LEFT, padx=4)
         ttk.Button(presets, text='TIP/TILT', command=self._preset_tip_tilt).pack(side=tk.LEFT, padx=4)
+        ttk.Button(presets, text='OPD/VEL Err', command=self._preset_opd_velocity_error).pack(
+            side=tk.LEFT, padx=4)
+        ttk.Button(presets, text='TIP/TILT Err', command=self._preset_tip_tilt_error).pack(
+            side=tk.LEFT, padx=4)
         ttk.Button(presets, text='OPD std', command=self._preset_opd_std).pack(side=tk.LEFT, padx=4)
         ttk.Button(presets, text='Piezos', command=self._preset_piezos).pack(side=tk.LEFT, padx=4)
         ttk.Button(presets, text='Velocity', command=self._preset_velocity_mean).pack(side=tk.LEFT, padx=4)
@@ -273,9 +277,17 @@ class BuffersTab:
     def _preset_velocity_mean(self):
         self._add_series('Tracker.velocity_3', reducer='value', label='Velocity')
 
+    def _preset_tip_tilt_error(self):
+        self._add_series('Servo.e_tip', reducer='value', label='Tip error')
+        self._add_series('Servo.e_tilt', reducer='value', label='Tilt error')
+
+    def _preset_opd_velocity_error(self):
+        self._add_series('Servo.e_opd', reducer='value', label='OPD error')
+        self._add_series('Servo.e_velocity', reducer='value', label='Velocity error')
+
     def _preset_tip_tilt(self):
-        self._add_series('Tracker.tip_1', reducer='value', label='Tip')
-        self._add_series('Tracker.tilt_1', reducer='value', label='Tilt')
+        self._add_series('Tracker.tip_10', reducer='value', label='Tip')
+        self._add_series('Tracker.tilt_10', reducer='value', label='Tilt')
 
     def _preset_opd_std(self):
         self._add_series('Tracker.opd_std_10', reducer='value', label='OPD std')

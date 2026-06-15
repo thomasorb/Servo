@@ -471,8 +471,10 @@ class DataObserver(NITLibrary.NITUserObserver):
                 self.arr_opds[:2] = opds.astype(config.FRAME_DTYPE)
                 self.arr_mean_opd[0] = float(mean_opd)
 
-            tip = np.mean(np.diff(np.unwrap(self.hangles[1:self.hcenter_pixels_nb+1], discont=np.pi)))
-            tilt = np.mean(np.diff(np.unwrap(self.vangles[1:self.vcenter_pixels_nb+1], discont=np.pi)))
+            #tip = np.mean(np.diff(np.unwrap(self.hangles[1:self.hcenter_pixels_nb+1], discont=np.pi)))
+            #tilt = np.mean(np.diff(np.unwrap(self.vangles[1:self.vcenter_pixels_nb+1], discont=np.pi)))
+            tip = faster.compute_slope_f32(self.hangles, 1, self.hcenter_pixels_nb+1)
+            tilt = faster.compute_slope_f32(self.vangles, 1, self.vcenter_pixels_nb+1)
             
             self.arr_tip[0]  = tip
             self.arr_tilt[0] = tilt

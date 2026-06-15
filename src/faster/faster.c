@@ -37,6 +37,47 @@ static inline int is_nan_f32(float v)
     return (u & 0x7fffffffU) > 0x7f800000U;
 }
 
+
+static inline float compute_slope(const float* x, int start, int end)
+{
+    /* Compute mean(diff(unwrap(x[start:end], discont=pi))) */
+
+    int n = end - start;
+    if (n < 2)
+        return NPY_NAN;
+
+    const float pi = (float)NPY_PI;
+    const float two_pi = 2.0f * pi;
+
+    float prev = x[start];
+    float offset = 0.0f;
+
+    double acc = 0.0;
+    int count = 0;
+
+    for (int i = start + 1; i < end; ++i) {
+        float cur = x[i];
+
+        /* unwrap step */
+        float delta = cur - prev;
+        if (delta > pi)
+            offset -= two_pi;
+        else if (delta < -pi)
+            offset += two_pi;
+
+        /* diff of unwrapped signal */
+        float unwrapped = cur + offset;
+        float prev_unwrapped = prev + offset;
+
+        acc += (double)(unwrapped - prev_unwrapped);
+        count++;
+
+        prev = cur;
+    }
+
+    return (count > 0) ? (float)(acc / (double)count) : NPY_NAN;
+}
+
 static void replace_nan_with_min_f32(PyArrayObject *profile)
 {
     float *data = (float *)PyArray_DATA(profile);
@@ -94,6 +135,47 @@ static void replace_nan_with_min_f32(PyArrayObject *profile)
         - w and l must be even
         - returns (vprofile, hprofile, roi)
    ============================================================ */
+
+static PyObject* py_compute_slope_f32(PyObject* self, PyObject* args)
+{
+    PyObject *x_obj;
+    int start, end;
+
+    if (!PyArg_ParseTuple(args, "Oii", &x_obj, &start, &end))
+        return NULL;
+
+    PyArrayObject* x = (PyArrayObject*)PyArray_FROM_OTF(
+        x_obj, NPY_FLOAT32, NPY_ARRAY_C_CONTIGUOUS | NPY_ARRAY_ALIGNED);
+
+    if (!x)
+        return NULL;
+
+    if (!ensure_float32_1d(x)) {
+        Py_DECREF(x);
+        PyErr_SetString(PyExc_ValueError, "x must be a 1D float32 array");
+        return NULL;
+    }
+
+    npy_intp n = PyArray_DIM(x, 0);
+    if (start < 0 || end > n || start >= end) {
+        Py_DECREF(x);
+        PyErr_SetString(PyExc_ValueError, "invalid start/end");
+        return NULL;
+    }
+
+    float* X = (float*)PyArray_DATA(x);
+
+    float result;
+
+    Py_BEGIN_ALLOW_THREADS
+    result = compute_slope(X, start, end);
+    Py_END_ALLOW_THREADS
+
+    Py_DECREF(x);
+
+    return PyFloat_FromDouble((double)result);
+}
+
 
 static PyObject* py_compute_profiles_local_f32(
     PyObject* self, PyObject* args, PyObject* kwargs)
@@ -741,7 +823,12 @@ static PyMethodDef Methods[] = {
      py_batch_compute_levels_f32,
      METH_VARARGS,
      "Compute mean levels over left/center/right index lists (no normalization)"},
-
+    
+    {"compute_slope_f32",
+     py_compute_slope_f32,
+     METH_VARARGS,
+     "Compute mean(diff(unwrap(x[start:end]))) for float32 array"},
+    
     {NULL, NULL, 0, NULL}
 };
 

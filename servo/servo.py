@@ -238,8 +238,8 @@ class Servo(core.Worker):
                     last_update_time = time.time()
                         
                 opd = float(self.data['Tracker.opd_100'][0])
-                tip = float(self.data['Tracker.tip_1'][0])
-                tilt = float(self.data['Tracker.tilt_1'][0])
+                tip = float(self.data['Tracker.tip_10'][0])
+                tilt = float(self.data['Tracker.tilt_10'][0])
 
                 phase = utils.opd2phase(opd)
                 tip_target = self.tip_model(phase)
@@ -266,6 +266,9 @@ class Servo(core.Worker):
                     e_opd  = opd_target  - opd
                     e_tip  = tip_target  - tip
                     e_tilt = tilt_target - tilt
+                    self.data['Servo.e_opd'][0] = float(e_opd)
+                    self.data['Servo.e_tip'][0] = float(e_tip)
+                    self.data['Servo.e_tilt'][0] = float(e_tilt)
 
                     u_ff = self.fir_short_mimo.update(e_opd, e_tip, e_tilt)
 
@@ -548,8 +551,6 @@ class Servo(core.Worker):
         vpixels_states = self.data['Servo.pixels_y']        
         hpixels_lists = utils.get_pixels_lists(hpixels_states)
         vpixels_lists = utils.get_pixels_lists(vpixels_states)
-        print("hpixels_lists:", hpixels_lists)
-        print("vpixels_lists:", vpixels_lists)
         
         hellipse_norm_coeffs = utils.get_ellipse_normalization_coeffs(
             rec_hprofiles, hpixels_lists)
@@ -768,6 +769,10 @@ class Servo(core.Worker):
 
                     #estimated_opd = step_start_opd + velocity_target * (time.perf_counter() - step_startt) * 1000 # nm
                     estimated_opd = move_start_opd + velocity_target * (time.perf_counter() - move_startt) * 1000 # nm
+                    self.data['Servo.e_opd'][0] = float(estimated_opd - opd)
+                    self.data['Servo.e_velocity'][0] = float(self.data['Tracker.velocity_3'][0] / 1000. - velocity_target)
+                    
+                    
                     self.data['DAQ.piezos_level'][0] = pid_opd_control.update(
                         control=self.data['DAQ.piezos_level'][0],
                         setpoint=estimated_opd,
@@ -1064,9 +1069,16 @@ class Servo(core.Worker):
         # Fallback kill if needed
         for p, _ in self.workers:
             if p.is_alive():
-                log.error(f"{p.name} stuck, forcing terminate()")
+                log.warning(f"{p.name} stuck, forcing terminate() SIGTERM")
                 p.terminate()
-                p.join()
+                p.join(timeout=2)
+                
+            if p.is_alive():
+                log.error(f"{p.name} really stuck, forcing terminate() SIGKILL")
+                p.kill()
+                p.join(timeout=2)
+
+                
 
         self.queue.put_nowait(None)
 
@@ -1119,14 +1131,19 @@ class DAController(object):
         
     def update(self):
         opd = float(self.data['Tracker.opd_100'][0]) # nm
-        tip = float(self.data['Tracker.tip_1'][0]) 
-        tilt = float(self.data['Tracker.tilt_1'][0])
+        tip = float(self.data['Tracker.tip_10'][0]) 
+        tilt = float(self.data['Tracker.tilt_10'][0])
 
         phase = utils.opd2phase(opd)
         tip_target = self.tip_model(phase)
         tilt_target = self.tilt_model(phase)
         self.data['Servo.tip_target'][0] = float(tip_target)
         self.data['Servo.tilt_target'][0] = float(tilt_target)
+
+        e_tip  = tip_target  - tip
+        e_tilt = tilt_target - tilt
+        self.data['Servo.e_tip'][0] = float(e_tip)
+        self.data['Servo.e_tilt'][0] = float(e_tilt)
                 
         self.data['DAQ.piezos_level'][1] = self.pid_da1_control.update(
             control=self.data['DAQ.piezos_level'][1],
