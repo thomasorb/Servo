@@ -40,8 +40,6 @@ static inline int is_nan_f32(float v)
 
 static inline float compute_slope(const float* x, int start, int end)
 {
-    /* Compute mean(diff(unwrap(x[start:end], discont=pi))) */
-
     int n = end - start;
     if (n < 2)
         return NPY_NAN;
@@ -50,26 +48,18 @@ static inline float compute_slope(const float* x, int start, int end)
     const float two_pi = 2.0f * pi;
 
     float prev = x[start];
-    float offset = 0.0f;
-
     double acc = 0.0;
     int count = 0;
 
     for (int i = start + 1; i < end; ++i) {
         float cur = x[i];
 
-        /* unwrap step */
         float delta = cur - prev;
-        if (delta > pi)
-            offset -= two_pi;
-        else if (delta < -pi)
-            offset += two_pi;
 
-        /* diff of unwrapped signal */
-        float unwrapped = cur + offset;
-        float prev_unwrapped = prev + offset;
+        // NumPy-like unwrap
+        delta -= two_pi * roundf(delta / two_pi);
 
-        acc += (double)(unwrapped - prev_unwrapped);
+        acc += (double)delta;
         count++;
 
         prev = cur;

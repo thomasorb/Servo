@@ -476,6 +476,7 @@ class DataObserver(NITLibrary.NITUserObserver):
             tip = faster.compute_slope_f32(self.hangles, 1, self.hcenter_pixels_nb+1)
             tilt = faster.compute_slope_f32(self.vangles, 1, self.vcenter_pixels_nb+1)
             
+            
             self.arr_tip[0]  = tip
             self.arr_tilt[0] = tilt
                 

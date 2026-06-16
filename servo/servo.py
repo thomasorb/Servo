@@ -124,8 +124,6 @@ class Servo(core.Worker):
                 ServoState.TRACKING, action=self._normalize),
             (ServoState.RUNNING, self.Event.CALIBRATE_TIP_TILT): Transition(
                 ServoState.RUNNING, action=self._calibrate_tip_tilt),
-            (ServoState.TRACKING, self.Event.CALIBRATE_TIP_TILT): Transition(
-                ServoState.TRACKING, action=self._calibrate_tip_tilt),    
             (ServoState.RUNNING, self.Event.STOP): Transition(
                 ServoState.STOPPED, action=self._stop),
             (ServoState.TRACKING, self.Event.MOVE_TO_OPD): Transition(
@@ -270,17 +268,28 @@ class Servo(core.Worker):
                     self.data['Servo.e_tip'][0] = float(e_tip)
                     self.data['Servo.e_tilt'][0] = float(e_tilt)
 
-                    u_ff = self.fir_short_mimo.update(e_opd, e_tip, e_tilt)
+                    self.data['DAQ.piezos_level'][0] = u_pid_opd
+                    self.data['DAQ.piezos_level'][1] = u_pid_da1
+                    self.data['DAQ.piezos_level'][2] = u_pid_da2
 
-                    self.data['DAQ.piezos_level'][0] = np.clip(
-                        u_pid_opd + u_ff["OPD"], config.PIEZO_V_MIN, config.PIEZO_V_MAX)
-
-                    if bool(self.data['params.SERVO_DA_LOOP_ENABLED'][0]):
-                        self.data['DAQ.piezos_level'][1] = np.clip(
-                            u_pid_da1 + u_ff["DA1"], da1_min, da1_max)
+                    #if bool(self.data['params.SERVO_DA_LOOP_ENABLED'][0]):
+                    #    self.data['DAQ.piezos_level'][1] = np.clip(
+                    #        u_pid_da1 + u_ff["DA1"], da1_min, da1_max)
                         
-                        self.data['DAQ.piezos_level'][2] = np.clip(
-                            u_pid_da2 + u_ff["DA2"], da2_min, da2_max)
+                    #    self.data['DAQ.piezos_level'][2] = np.clip(
+                    #        u_pid_da2 + u_ff["DA2"], da2_min, da2_max)
+
+                    #u_ff = self.fir_short_mimo.update(e_opd, e_tip, e_tilt)
+
+                    #self.data['DAQ.piezos_level'][0] = np.clip(
+                    #    u_pid_opd + u_ff["OPD"], config.PIEZO_V_MIN, config.PIEZO_V_MAX)
+
+                    #if bool(self.data['params.SERVO_DA_LOOP_ENABLED'][0]):
+                    #    self.data['DAQ.piezos_level'][1] = np.clip(
+                    #        u_pid_da1 + u_ff["DA1"], da1_min, da1_max)
+                        
+                    #    self.data['DAQ.piezos_level'][2] = np.clip(
+                    #        u_pid_da2 + u_ff["DA2"], da2_min, da2_max)
 
                     
                 else:

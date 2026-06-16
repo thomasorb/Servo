@@ -28,13 +28,25 @@ class Viewer(core.Worker):
         self.config = config
         
         self.root = tk.Tk()
-        self.root.title('IRCamera Viewer')
+        self.root.title('THÉSÉE')
+        
+        from pathlib import Path
+
+        icon_path = Path(__file__).parent / "icon.png"  # adjust filename if needed
+
+        try:
+            self._icon = tk.PhotoImage(file=str(icon_path))
+            self.root.iconphoto(True, self._icon)  # keep reference!
+        except Exception as e:
+            log.warning(f"Failed to load icon: {e}")
+    
         self.root.geometry('1280x900')
         self.root.minsize(900, 600)
         self.load_window_geometry()
         self.root.protocol('WM_DELETE_WINDOW', self.on_close)
         self.root.option_add('*Font', ('Noto Sans', 14))
         self.root.tk.call('tk', 'scaling', 1.0)
+        
         style = ttk.Style(self.root)
         style.configure('.', font=('Noto Sans', 14))
         style.theme_use('clam')
@@ -126,8 +138,8 @@ class Viewer(core.Worker):
                 ('!disabled','#fcf3cf')
             ]
         )
-        
-        
+
+
         # state
         self._close_loop = False
         self.show_normalized = True
@@ -138,6 +150,7 @@ class Viewer(core.Worker):
 
         # layout
         root_main = ttk.Frame(self.root)
+        
         root_main.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
         left = ttk.Frame(root_main)
         left.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
@@ -268,6 +281,7 @@ class Viewer(core.Worker):
     # right column
     def _build_right_column(self):
         status = ttk.LabelFrame(self._right_col, text='Status', padding=10)
+
         status.pack(fill=tk.X, expand=False, pady=15)
         self.status_var = tk.StringVar(value='Idle')
         ttk.Label(status, textvariable=self.status_var).pack(anchor='w')
@@ -320,7 +334,7 @@ class Viewer(core.Worker):
         self.roi_wrap.pack(fill=tk.X, expand=False, pady=10)
         self.roi_wrap.configure(width=360, height=360)
         self.roi_wrap.pack_propagate(False)
-        self.roi_canvas = tk.Canvas(self.roi_wrap, bg='black')
+        self.roi_canvas = tk.Canvas(self.roi_wrap)
         self.roi_canvas.pack(fill=tk.BOTH, expand=True)
         self.roi_image_id = None
         # bootstrap
@@ -741,7 +755,7 @@ class Viewer(core.Worker):
         self._set_enabled(self.move_to_opd_btn, st == ServoState.TRACKING)
 
         # Calibrate TIP-TILT in RUNNING or TRACKING
-        self._set_enabled(self.calibrate_tiptilt_btn, st in (ServoState.RUNNING, ServoState.TRACKING))
+        self._set_enabled(self.calibrate_tiptilt_btn, st in (ServoState.RUNNING, ))
 
         # ROI MODE (ROI/FF) transitions defined from RUNNING
         self._set_enabled(self.roi_mode_btn, st == ServoState.RUNNING)

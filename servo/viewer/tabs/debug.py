@@ -4,6 +4,30 @@ import numpy as np
 import time
 from ...fsm import ServoState, NexlineState, WorkerState  # enums (parent of viewer)
 
+COLORS = {
+    "bg": "#1e1e1e",
+    "panel": "#252526",
+    "panel2": "#2d2d30",
+    "fg": "#d4d4d4",
+    "muted": "#aaaaaa",
+
+    "accent": "#0e639c",
+    "accent2": "#3794ff",
+
+    "danger": "#f14c4c",
+    "warning": "#cca700",
+    "success": "#6a9955",
+    "info": "#4fc1ff",
+
+    "btn_red": "#f14c4c",
+    "btn_orange": "#ff8800",
+    "btn_blue": "#3794ff",
+    "btn_green": "#3ecf8e",
+    "btn_purple": "#b180d7",
+    "btn_yellow": "#e5c07b",
+}
+
+
 class DebugTab:
     """Data inspector + status/states."""
 
@@ -68,6 +92,7 @@ class DebugTab:
         right.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         cols = ('key', 'dtype', 'shape', 'preview')
         self.tree = ttk.Treeview(right, columns=cols, show='headings', height=12, selectmode='extended')
+        self.tree.tag_configure("all", background=COLORS["panel"])
         for col, w in zip(cols, (220, 110, 110, 600)):
             self.tree.heading(col, text=col)
             self.tree.column(col, width=w, anchor='w', stretch=(col == 'preview'))
