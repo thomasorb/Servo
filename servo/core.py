@@ -72,8 +72,7 @@ class Worker(StateMachine):
                     break
                 if self.stop_event.is_set():
                     break
-                
-                
+                   
                 if hasattr(self, 'loop_once'):
                     try:
                         self.loop_once()

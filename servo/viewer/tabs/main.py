@@ -9,6 +9,7 @@ from ..widgets.casebar import CaseBar
 from ... import config
 from ... import utils
 
+
 class MainTab:
     """Main image + profiles + ROI preview."""
 
@@ -319,7 +320,8 @@ class MainTab:
             ax.axhline(0.75, color='tab:gray')
             ax.set_title(title)
             ax.set_ylim(0, 1)
-            ax.set_xlim(-0.75, len(dat) - 0.25)
+            #ax.set_xlim(-0.75, len(dat) - 0.25)
+            ax.set_xlim(-0.5, len(dat)-0.25)
             ax.set_xticks([])
             ax.set_yticks([])
             for s in ax.spines.values(): s.set_visible(False)

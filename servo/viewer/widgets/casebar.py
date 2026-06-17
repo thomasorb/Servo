@@ -9,7 +9,7 @@ class CaseBar(tk.Frame):
     )
     ORDER = [0, 1, 2]
 
-    def __init__(self, parent, count=8, height=28, gap=2, padding=8, min_cell_w=6,
+    def __init__(self, parent, count=8, height=28, gap=5, padding=0, min_cell_w=30,
                  colors=None, on_change=None, states=None, **kwargs):
         super().__init__(parent, **kwargs)
         self.count = int(count)

@@ -765,7 +765,7 @@ class Servo(core.Worker):
 
                     opd = float(self.data['Tracker.opd_100'][0]) # nm
 
-                    nexline_is_moving = NexlineState(int(self.data['Nexline.state'])).name == 'MOVING'
+                    nexline_is_moving = NexlineState(int(self.data['Nexline.state'][0])).name == 'MOVING'
                     if time.perf_counter() - step_startt > 0.5: # wait for event dispatch
                         if not nexline_is_moving:
                             break
@@ -903,7 +903,7 @@ class Servo(core.Worker):
             while True: # wait for nexline move to finish
                 loop_startt = time.perf_counter()
 
-                nexline_is_moving = NexlineState(int(self.data['Nexline.state'])).name == 'MOVING'
+                nexline_is_moving = NexlineState(int(self.data['Nexline.state'][0])).name == 'MOVING'
                 if time.perf_counter() - step_startt > 0.5: # wait for event dispatch
                     if not nexline_is_moving:
                         break

@@ -113,9 +113,9 @@ class Record():
             log.warning(f'Not enough data to compute normalization coefficients: only {self.position} frames recorded')
             return None, None
         
-        ircube = self.ir_images[:self.position].copy()
+        ircube = np.ascontiguousarray(self.ir_images[:self.position].copy())
 
-        # save ircube used for noramlization as an npy file for later analysis with a timestamp in the path
+        # save ircube used for normalization as an npy file for later analysis with a timestamp in the path
         np.save(f'servo_tracker_normalization_ircube_{time.strftime("%Y%m%d-%H%M%S")}.npy', ircube)
         
         # recompute normalization maps
@@ -130,7 +130,12 @@ class Record():
         #     hprofiles[iz, :] = ihprof.copy()
         #     vprofiles[iz, :] = ivprof.copy()
 
-        roinorm_min, roinorm_max = utils.get_roi_normalization_coeffs(ircube)
+        try:
+            log.info('Computing normalization coefficients with a cube of shape: ' + str(ircube.shape))
+            roinorm_min, roinorm_max = utils.get_roi_normalization_coeffs(ircube)
+        except Exception as e:
+            log.error(f'Error computing normalization coefficients')
+            return None, None
 
         return roinorm_min.T, roinorm_max.T
         
@@ -147,7 +152,7 @@ class Tracker(core.Worker):
             (self.State.RUNNING, self.Event.STOP_RECORDING): Transition(
                 self.State.RUNNING, action=self._stop_recording),
             (self.State.RUNNING, self.Event.NORMALIZE): Transition(
-                self.State.RUNNING, action=self._normalize),        
+                self.State.RUNNING, action=self._normalize),
         }
         
         self.frequencies = [ifreq for ifreq in config.TRACKER_STATS_FREQUENCIES]
@@ -275,7 +280,11 @@ class Tracker(core.Worker):
     def _normalize(self, _):
         log.info('Normalizing tracker data')
         width = int(self.data['params.PROFILE_WIDTH'][0])
+
         
+        import inspect
+        print("STACK DEPTH:", len(inspect.stack()))
+
         roinorm_min, roinorm_max = self.record.get_normalization_coeffs(width)
         if roinorm_min is None or roinorm_max is None:
             log.warning('Could not compute normalization coefficients.')

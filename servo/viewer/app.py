@@ -15,6 +15,75 @@ from .widgets.casebar import CaseBar  # convenience
 from .. import core, config, utils
 from ..fsm import ServoState
 
+import ttkbootstrap as tb
+from ttkbootstrap.constants import *
+
+from cycler import cycler
+from pypalettes import load_palette
+import matplotlib.pyplot as plt
+
+colors = load_palette("Signac", shuffle=True)
+
+plt.rcParams["axes.prop_cycle"] = cycler(color=colors)
+
+dark_theme = {
+    # Figure & axes
+    #"figure.facecolor": "black",
+    #"axes.facecolor": "black",
+    "figure.facecolor": "#111111",
+    "axes.facecolor": "#111111",
+    "savefig.facecolor": "black",
+
+
+    # font size
+
+    # "axes.labelsize": 16,
+    # "axes.titlesize": 16,            
+    # "xtick.labelsize": 16,
+    # "ytick.labelsize": 16,
+
+    # "legend.fontsize": 16,
+
+    # "figure.titlesize": 16,
+
+    
+    # Text
+    #"text.color": "white",
+    "text.color": "#EEEEEE",
+    "axes.labelcolor": "white",
+    "xtick.color": "white",
+    "ytick.color": "white",
+    "axes.titlecolor": "white",
+
+    # Spines
+    #"axes.edgecolor": "white",
+    "axes.edgecolor": "#DDDDDD",
+
+    # Grid
+    "grid.color": "#444444",
+    "grid.linestyle": ":",
+    "grid.alpha": 0.4,
+
+    # Lines
+    #"lines.linewidth": 3.0,
+    #"lines.markersize": 10,
+
+    # Legend
+    "legend.frameon": False,
+    "legend.labelcolor": "white",
+
+    # Fonts (optionnel)
+    #"font.size": 14,
+    #"font.weight": "bold",
+    
+    #"font.family": "sans-serif",
+    #"font.sans-serif": ["GohuFont uni14 Nerd Font Propo", "Roboto", "DejaVu Sans"],
+    #"mathtext.default": "regular"
+    
+}
+
+plt.rcParams.update(dark_theme)
+
 
 log = logging.getLogger(__name__)
 
@@ -27,7 +96,8 @@ class Viewer(core.Worker):
 
         self.config = config
         
-        self.root = tk.Tk()
+        #self.root = tk.Tk()
+        self.root = tb.Window(themename='darkly') # cyborg, darkly, solar, superhero
         self.root.title('THÉSÉE')
         
         from pathlib import Path
@@ -46,99 +116,6 @@ class Viewer(core.Worker):
         self.root.protocol('WM_DELETE_WINDOW', self.on_close)
         self.root.option_add('*Font', ('Noto Sans', 14))
         self.root.tk.call('tk', 'scaling', 1.0)
-        
-        style = ttk.Style(self.root)
-        style.configure('.', font=('Noto Sans', 14))
-        style.theme_use('clam')
-
-        # danger (red): STOP
-        style.configure(
-            'Red.TButton',
-            foreground='black',
-            background='#f2b6b6'     # pastel red
-        )
-        style.map(
-            'Red.TButton',
-            background=[
-                ('disabled', '#f7dcdc'),
-                ('active',   '#ec9d9d'),
-                ('!disabled','#f2b6b6')
-            ]
-        )
-        
-        # orange: NORMALIZE, Calibrate TIP-TILT
-        style.configure(
-            'Orange.TButton',
-            foreground='black',
-            background='#f7c79e'     # pastel orange
-        )
-        style.map(
-            'Orange.TButton',
-            background=[
-                ('disabled', '#f9e2cf'),
-                ('active',   '#f5b27a'),
-                ('!disabled','#f7c79e')
-            ]
-        )
-
-        # blue button style
-        style.configure(
-            'Blue.TButton',
-            foreground='black',
-            background='#a7c7e7'     # pastel blue
-        )
-        style.map(
-            'Blue.TButton',
-            background=[
-                ('disabled', '#d4e4f3'),
-                ('active',   '#8bb5e0'),
-                ('!disabled','#a7c7e7')
-            ]
-        )
-
-        # green button style
-        style.configure(
-            'Green.TButton',
-            foreground='black',
-            background='#a9dfbf'     # pastel green
-        )
-        style.map(
-            'Green.TButton',
-            background=[
-                ('disabled', '#d5f5e3'),
-                ('active',   '#82e0aa'),
-                ('!disabled','#a9dfbf')
-            ]
-        )
-
-        style.configure(
-            'Purple.TButton',
-            foreground='black',
-            background='#d7b9f7'     # pastel purple / light lavender
-        )
-        style.map(
-            'Purple.TButton',
-            background=[
-                ('disabled', '#eadcfb'),   # very light pastel
-                ('active',   '#c69df3'),   # slightly stronger pastel
-                ('!disabled','#d7b9f7')
-            ]
-        )
-
-        style.configure(
-            'Yellow.TButton',
-            foreground='black',
-            background='#f9e79f'     # pastel yellow (soft, non-aggressive)
-        )
-        style.map(
-            'Yellow.TButton',
-            background=[
-                ('disabled', '#fcf3cf'),   # very light pastel
-                ('active',   '#f7d774'),   # slightly
-                ('!disabled','#fcf3cf')
-            ]
-        )
-
 
         # state
         self._close_loop = False
@@ -187,6 +164,7 @@ class Viewer(core.Worker):
         # timers
         self.root.bind('<<Shutdown>>', lambda e: self._really_stop())
 
+
     def on_enter_running(self, _):
         log.info("Viewer entering running (starting Tk mainloop)")
         self.root.after(100, self.refresh)
@@ -225,46 +203,46 @@ class Viewer(core.Worker):
         self.shownorm_btn = ttk.Button(toolbar, text='Show Un-normalized', command=self.toggle_normalized)
         self.shownorm_btn.pack(side=tk.LEFT, padx=10)
 
-        self.record_btn = ttk.Button(toolbar, text='Record', style='Orange.TButton',
+        self.record_btn = ttk.Button(toolbar, text='Record', bootstyle='warning',
                                      command=self.toggle_record)
         self.record_btn.pack(side=tk.LEFT, padx=10)
 
 
         ttk.Button(toolbar, text='Reset Zoom', command=self.main_tab.reset_zoom).pack(side=tk.LEFT, padx=10)
 
-        self.stop_btn = ttk.Button(toolbar, text='STOP', style='Red.TButton',
+        self.stop_btn = ttk.Button(toolbar, text='STOP', bootstyle='danger',
                                    command=lambda: self._set_event('Servo.stop'))
         self.stop_btn.pack(side=tk.RIGHT, padx=10)
 
-        self.move_to_opd_btn = ttk.Button(toolbar, text='MOVE to OPD', style='Blue.TButton',
+        self.move_to_opd_btn = ttk.Button(toolbar, text='MOVE to OPD', bootstyle='primary',
                                           command=lambda: self._set_event('Servo.move_to_opd'))
         self.move_to_opd_btn.pack(side=tk.RIGHT, padx=10)
 
-        self.close_loop_btn = ttk.Button(toolbar, text='CLOSE LOOP', style='Orange.TButton',
+        self.close_loop_btn = ttk.Button(toolbar, text='CLOSE LOOP', bootstyle='warning',
                                          command=self.toggle_close_loop)
         self.close_loop_btn.pack(side=tk.RIGHT, padx=10)
 
-        self.walk_to_opd_btn = ttk.Button(toolbar, text='WALK to OPD', style='Green.TButton',
+        self.walk_to_opd_btn = ttk.Button(toolbar, text='WALK to OPD', bootstyle='success',
                                           command=self.toggle_walk_to_opd)
         self.walk_to_opd_btn.pack(side=tk.RIGHT, padx=10)
 
-        self.wait_btn = ttk.Button(toolbar, text='WAIT', style='Orange.TButton',
+        self.wait_btn = ttk.Button(toolbar, text='WAIT', bootstyle='warning',
                                    command=self.toggle_wait)
         self.wait_btn.pack(side=tk.RIGHT, padx=10)
 
-        self.calibrate_tiptilt_btn = ttk.Button(toolbar, text='Calibrate TIP-TILT', style='Yellow.TButton',
+        self.calibrate_tiptilt_btn = ttk.Button(toolbar, text='Calibrate TIP-TILT', bootstyle='info',
                                             command=lambda: self._set_event('Servo.calibrate_tip_tilt'))
         self.calibrate_tiptilt_btn.pack(side=tk.RIGHT, padx=10)
 
-        self.normalize_btn = ttk.Button(toolbar, text='NORMALIZE', style='Yellow.TButton',
+        self.normalize_btn = ttk.Button(toolbar, text='NORMALIZE', bootstyle='info',
                                         command=lambda: self._set_event('Servo.normalize'))
         self.normalize_btn.pack(side=tk.RIGHT, padx=10)
 
-        self.reset_zpd_btn = ttk.Button(toolbar, text='Reset OPD', style='Orange.TButton',
+        self.reset_zpd_btn = ttk.Button(toolbar, text='Reset OPD', bootstyle='warning',
                                         command=lambda: self._set_event('Servo.reset_zpd'))
         self.reset_zpd_btn.pack(side=tk.RIGHT, padx=10)
 
-        self.roi_mode_btn = ttk.Button(toolbar, text='FULL FRAME MODE', style='Purple.TButton',
+        self.roi_mode_btn = ttk.Button(toolbar, text='FULL FRAME MODE', bootstyle='secondary',
                                        command=self.toggle_roi_mode)
         self.roi_mode_btn.pack(side=tk.RIGHT, padx=10)
 
@@ -611,25 +589,62 @@ class Viewer(core.Worker):
             v = max(vmin, min(v, vmax))
             var.set(v)
             self._write_piezos()
+
         def _col(label, var, col):
-            colf = ttk.Frame(row); colf.grid(row=0, column=col, padx=10, pady=5)
-            ttk.Label(colf, text=label).pack(pady=(0,6))
-            scl = tk.Scale(colf, from_=10.0, to=0.0, variable=var, orient=tk.VERTICAL,
-                           showvalue=True, resolution=0.01, length=220,
-                           command=self._on_piezos_change)
+            colf = ttk.Frame(row)
+            colf.grid(row=0, column=col, padx=20, pady=5)
+
+            ttk.Label(colf, text=label).pack(pady=(0, 6))
+
+            val_label = ttk.Label(colf, text=f"{var.get():.2f}")
+            val_label.pack()
+
+            def _update_label(*_):
+                try:
+                    val_label.config(text=f"{var.get():.2f}")
+                except Exception:
+                    val_label.config(text="—")
+
+            var.trace_add("write", _update_label)
+
+            scl = tk.Scale(
+                colf,
+                from_=10.0,
+                to=0.0,
+                variable=var,
+                orient=tk.VERTICAL,
+                showvalue=False,  # important
+                resolution=0.01,
+                length=220,
+                command=self._on_piezos_change
+            )
             scl.pack()
-            btns = ttk.Frame(colf); btns.pack(pady=(6,0))
+
+            btns = ttk.Frame(colf)
+            btns.pack(pady=(6, 0))
+
             if 'DA' in label:
                 _piezo_type = 'DA'
             else:
                 _piezo_type = 'OPD'
-            ttk.Button(btns, text='-', width=1.5,
-                       command=lambda: _nudge(var, scl, _piezo_type + '_STEP', -1)).pack(side=tk.LEFT)
-            ttk.Button(btns, text='+', width=1.5,
-                       command=lambda: _nudge(var, scl, _piezo_type + '_STEP', +1)).pack(side=tk.LEFT)
-            ttk.Button(btns, text='d', width=1.5,
-                       command=lambda: _nudge(var, scl, _piezo_type + '_DIRAC', +1)).pack(side=tk.LEFT)
+
+            tk.Button(btns, text='-', width=1, height=1, font=('Noto Sans', 10),
+                      padx=1, pady=0,
+                      command=lambda: _nudge(var, scl, _piezo_type + '_STEP', -1)
+                      ).pack(side=tk.LEFT)
+
+            tk.Button(btns, text='+', width=1, height=1, font=('Noto Sans', 10),
+                      padx=1, pady=0,
+                      command=lambda: _nudge(var, scl, _piezo_type + '_STEP', +1)
+                      ).pack(side=tk.LEFT)
+
+            tk.Button(btns, text='d', width=1, height=1, font=('Noto Sans', 10),
+                      padx=1, pady=0,
+                      command=lambda: _nudge(var, scl, _piezo_type + '_DIRAC', +1)
+                      ).pack(side=tk.LEFT)
+
             return scl
+
         self.scale_opd = _col('OPD', self.var_opd, 0)
         self.scale_da1 = _col('DA-1', self.var_da1, 1)
         self.scale_da2 = _col('DA-2', self.var_da2, 2)
