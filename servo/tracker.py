@@ -282,9 +282,6 @@ class Tracker(core.Worker):
         width = int(self.data['params.PROFILE_WIDTH'][0])
 
         
-        import inspect
-        print("STACK DEPTH:", len(inspect.stack()))
-
         roinorm_min, roinorm_max = self.record.get_normalization_coeffs(width)
         if roinorm_min is None or roinorm_max is None:
             log.warning('Could not compute normalization coefficients.')

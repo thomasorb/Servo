@@ -691,7 +691,6 @@ class Servo(core.Worker):
                 self.events['Servo.stop'].set()
                 stop_walk = True
                 break
-        print('loop ended')
 
     def on_exit_waiting(self, _):
         self.events['Tracker.stop_recording'].set() # stop recording tracker data

@@ -4,6 +4,7 @@ from multiprocessing import shared_memory
 from enum import IntEnum, auto
 import traceback
 import time
+import inspect
 
 from . import config
 from . import params
@@ -60,35 +61,67 @@ class Worker(StateMachine):
                 evs[f'{classname}.' + iname].clear()
                 self.dispatch(getattr(self.Event, iname.upper()), payload=None)
 
-    def on_enter_running(self, _):
-        log.info(f"{self.classname} enter running")
+    # def on_enter_running(self, _):
+    #     log.info(f"{self.classname} enter running")
 
-        # running loop
-        while True:
-            try:
-                self.poll()
+    #     # running loop
+    #     while True:
+    #         try:
+    #             self.poll()
                 
+    #             if self.state is self.State.STOPPED:
+    #                 break
+    #             if self.stop_event.is_set():
+    #                 break
+                   
+    #             if hasattr(self, 'loop_once'):
+    #                 try:
+    #                     self.loop_once()
+    #                 except Exception as e:
+    #                     log.error('Exception at loop_once:\n' + traceback.format_exc())
+    #                     self.dispatch(self.Event.STOP)
+                
+    #             time.sleep(1e-2)
+    #         except KeyboardInterrupt:
+    #             log.error('Keyboard interrupt')
+    #             self.dispatch(self.Event.STOP)
+    #         except Exception as e:
+    #             log.error('Exception at running:\n' + traceback.format_exc())
+    #             self.dispatch(self.Event.STOP)
+                
+    def on_enter_running(self, _):
+        log.info(f"{self.classname} enter running|STACK DEPTH: {len(inspect.stack())}")
+
+
+        # Prevent re-entrant running loops
+        if getattr(self, "_running_loop_active", False):
+            log.debug(f"{self.classname}: running loop already active, skipping re-entry")
+            return
+
+        self._running_loop_active = True
+
+        try:
+            while True:
+                self.poll()
+
                 if self.state is self.State.STOPPED:
                     break
+
                 if self.stop_event.is_set():
                     break
-                   
+
                 if hasattr(self, 'loop_once'):
                     try:
                         self.loop_once()
-                    except Exception as e:
+                    except Exception:
                         log.error('Exception at loop_once:\n' + traceback.format_exc())
                         self.dispatch(self.Event.STOP)
-                
+
                 time.sleep(1e-2)
-            except KeyboardInterrupt:
-                log.error('Keyboard interrupt')
-                self.dispatch(self.Event.STOP)
-            except Exception as e:
-                log.error('Exception at running:\n' + traceback.format_exc())
-                self.dispatch(self.Event.STOP)
-                
-                
+
+        finally:
+            self._running_loop_active = False
+
     def on_exit_running(self, _):
         log.info(f"{self.classname} exit running")
         
