@@ -769,21 +769,28 @@ class Servo(core.Worker):
         step_expected = self._walk_direction * self.data['params.NEXLINE_OPD_UPDATE'][0]
 
         if abs(step_opd_walked) < 0.5 * abs(step_expected):
+            log.warning(f"Step OPD walked {step_opd_walked} nm is too small, skipping velocity adjustment")
             self._walking_state = "step"
             return
 
+        # try to adjust velocity
+        step_piezo_end = float(self.data['DAQ.piezos_level'][0])
+        step_piezo_diff = (step_piezo_end - 5)
+        step_piezo_walked = step_piezo_diff * config.DAQ_PIEZO_OPD_PER_LEVEL
         step_time = time.perf_counter() - self._step_start_time
-        step_velocity = step_opd_walked / step_time / 1000.0
-
-        ratio = abs(step_velocity / self._velocity_target)
-
-        self._step_velocity_adjustment /= ratio
-
-        self._step_velocity_adjustment = np.clip(
-            self._step_velocity_adjustment, 0.1, 1.9
-        )
-
-        log.info(f"Velocity adjustment: {self._step_velocity_adjustment:.3f}")
+        
+        step_nexline_velocity = (step_opd_walked - step_piezo_walked) / step_time / 1000. # um/s
+        
+        velocity_ratio = abs(step_nexline_velocity / self._velocity_target)
+        log.info(f"Walked {step_opd_walked:.2f} nm (piezo contribution {step_piezo_walked:.2f} nm) in {step_time:.1f} s, estimated Nexline velocity {step_nexline_velocity:.2f} um/s, ratio {velocity_ratio:.2%}")
+        self._step_velocity_adjustment /= velocity_ratio # corrected to obtain the right velocity for the nexline
+        log.info(f"Uncompensated velocity adjustment factor: {self._step_velocity_adjustment:.3f}")
+        self._step_velocity_adjustment += (step_piezo_end - 5) / 5 * self.data['params.NEXLINE_VELOCITY_ADJUSTMENT_GAIN'][0]
+        step_velocity_adjustment_clipped = max(0.1, min(1.9, self._step_velocity_adjustment)) # limit adjustment factor to avoid too much compensation which may cause instability
+        if self._step_velocity_adjustment != step_velocity_adjustment_clipped:
+            log.warning(f"Velocity adjustment factor {self._step_velocity_adjustment:.3f} out of bounds, clipped to {step_velocity_adjustment:.3f}")
+        self._step_velocity_adjustment = step_velocity_adjustment_clipped
+        log.info(f"Velocity adjustment factor compensated to keep piezo in central zone: {self._step_velocity_adjustment:.3f}")
 
         self._walking_state = "step"
         
