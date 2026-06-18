@@ -47,7 +47,7 @@ class Worker(StateMachine):
     
         super().__init__(self.State.IDLE, table)
 
-    def poll(self):    
+    def poll(self):
         evs = self.events
         classname = self.__class__.__name__
         events_dict = list(getattr(config, f'{classname.upper()}_EVENTS', []))
@@ -58,50 +58,15 @@ class Worker(StateMachine):
         
         for iname in events_dict:
             if evs.get(f'{classname}.' + iname) and evs[f'{classname}.' + iname].is_set():
+                log.info(f"EVENT RECEIVED: {classname}.{iname}")
                 evs[f'{classname}.' + iname].clear()
                 self.dispatch(getattr(self.Event, iname.upper()), payload=None)
 
-    # def on_enter_running(self, _):
-    #     log.info(f"{self.classname} enter running")
+    def run(self):
+        log.info(f"{self.classname} main loop started")
 
-    #     # running loop
-    #     while True:
-    #         try:
-    #             self.poll()
-                
-    #             if self.state is self.State.STOPPED:
-    #                 break
-    #             if self.stop_event.is_set():
-    #                 break
-                   
-    #             if hasattr(self, 'loop_once'):
-    #                 try:
-    #                     self.loop_once()
-    #                 except Exception as e:
-    #                     log.error('Exception at loop_once:\n' + traceback.format_exc())
-    #                     self.dispatch(self.Event.STOP)
-                
-    #             time.sleep(1e-2)
-    #         except KeyboardInterrupt:
-    #             log.error('Keyboard interrupt')
-    #             self.dispatch(self.Event.STOP)
-    #         except Exception as e:
-    #             log.error('Exception at running:\n' + traceback.format_exc())
-    #             self.dispatch(self.Event.STOP)
-                
-    def on_enter_running(self, _):
-        log.info(f"{self.classname} enter running|STACK DEPTH: {len(inspect.stack())}")
-
-
-        # Prevent re-entrant running loops
-        if getattr(self, "_running_loop_active", False):
-            log.debug(f"{self.classname}: running loop already active, skipping re-entry")
-            return
-
-        self._running_loop_active = True
-
-        try:
-            while True:
+        while True:
+            try:
                 self.poll()
 
                 if self.state is self.State.STOPPED:
@@ -110,18 +75,27 @@ class Worker(StateMachine):
                 if self.stop_event.is_set():
                     break
 
-                if hasattr(self, 'loop_once'):
-                    try:
-                        self.loop_once()
-                    except Exception:
-                        log.error('Exception at loop_once:\n' + traceback.format_exc())
-                        self.dispatch(self.Event.STOP)
-
+                if self.state not in (self.State.IDLE, self.State.STOPPED):
+                    if hasattr(self, "loop_once"):
+                        try:
+                            self.loop_once()
+                        except Exception:
+                            log.error('Exception at loop_once:\n' + traceback.format_exc())
+                            self.dispatch(self.Event.STOP)
+            
                 time.sleep(1e-2)
 
-        finally:
-            self._running_loop_active = False
+            except KeyboardInterrupt:
+                log.error('Keyboard interrupt')
+                self.dispatch(self.Event.STOP)
 
+            except Exception:
+                log.error('Exception in main loop:\n' + traceback.format_exc())
+                self.dispatch(self.Event.STOP)
+
+    def on_enter_running(self, _):
+        log.info(f"{self.classname} enter running")
+    
     def on_exit_running(self, _):
         log.info(f"{self.classname} exit running")
         

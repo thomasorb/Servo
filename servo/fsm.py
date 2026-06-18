@@ -66,7 +66,9 @@ class StateMachine:
         if self.table is None:
             log.error("FSM transition table is not defined. self.table is None.")
             return False
-            
+
+        log.warning(f"DISPATCH: {self.state} + {event}")
+        
         tr = self.table.get((self.state, event))
         if tr is None:
             #raise TransitionError(f"Invalid transition {self.state.name} --{event.name}--> ?")

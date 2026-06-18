@@ -74,6 +74,7 @@ def worker_process(queue, data, WorkerClass, events, priority=None, kwargs=None)
     try:
         worker = WorkerClass(data, events, **kwargs)
         worker.dispatch(worker.Event.START)
+        worker.run()
     except BaseException as be:
         log.error(f"Worker crashed: {type(be).__name__}: {be}")
         log.error("Traceback:\n%s", traceback.format_exc())
@@ -154,6 +155,36 @@ class Servo(core.Worker):
         self.tip_model = None
         self.tilt_model = None
 
+        self._mode = None
+
+        # tracking state
+        self._tracking_last_update = 0.0
+        self._tracking_refresh = 0.0
+        self._tracking_da1_buffer = []
+        self._tracking_da2_buffer = []
+
+        self._pid_opd = None
+        self._pid_da1 = None
+        self._pid_da2 = None
+
+        # waiting / walking flags
+        self._waiting_active = False
+        self._walking_active = False
+
+        # internal walking states
+        self._walking_state = None   # "init", "step", "wait_step", "done"
+        self._walking_active = False
+
+
+    def loop_once(self):
+        if self._mode == "tracking":
+            self._loop_tracking()
+        elif self._mode == "waiting":
+            self._loop_waiting()
+        elif self._mode == "walking":
+            self._loop_walking()
+
+        
     def install_signal_handlers(self):
         """
         Install SIGINT/SIGTERM handlers to trigger a clean shutdown via _stop transition.
@@ -172,6 +203,7 @@ class Servo(core.Worker):
 
     # Hooks (facultatif)
     def on_enter_running(self, _):
+        self._mode = None
         self.install_signal_handlers()
         super().on_enter_running(_)
         
@@ -179,168 +211,84 @@ class Servo(core.Worker):
     def on_enter_tracking(self, _):
         log.info(">> TRACKING")
 
-        self.data['Servo.is_lost'][0] = float(False)
-        
-        opd_target = self.data['Servo.opd_target'][0]
         if self.tip_model is None or self.tilt_model is None:
-            log.error('tip/tilt models not calibrated, cannot track')
+            log.error("tip/tilt models not calibrated")
             self.events['Servo.open_loop'].set()
             return
-                
-        log.info(f"   OPD target: {opd_target} nm")
 
-        da1_level_orig = self.data['DAQ.piezos_level'][1]
-        da2_level_orig = self.data['DAQ.piezos_level'][2]
+        self.data['Servo.is_lost'][0] = float(False)
+
+        self._mode = "tracking"
+
+        self._pid_opd = pid.get_pid_control(self.data, 'TRACK_OPD')
+        self._pid_da1 = pid.get_pid_control(self.data, 'TRACK_DA1')
+        self._pid_da2 = pid.get_pid_control(self.data, 'TRACK_DA2')
+
+        self._tracking_refresh = time.perf_counter()
+        self._tracking_last_update = time.perf_counter()
+
+        self._tracking_da1_buffer.clear()
+        self._tracking_da2_buffer.clear()
         
-        last_update_time = time.time()
-        da1_buffer = list()
-        da2_buffer = list()
+        self._tracking_opd_target = self.data['Servo.opd_target'][0]
         
-        pid_opd_control = pid.get_pid_control(self.data, 'TRACK_OPD')
-        
-        max_v_diff = self.data['params.PIEZO_DA_LOOP_MAX_V_DIFF'][0]
 
-        da1_min = da1_level_orig - max_v_diff
-        da1_max = da1_level_orig + max_v_diff
-        da2_min = da2_level_orig - max_v_diff
-        da2_max = da2_level_orig + max_v_diff
-        
-        pid_da1_control = pid.get_pid_control(
-            self.data, 'TRACK_DA1', out_min=da1_min, out_max=da1_max)
-        pid_da2_control = pid.get_pid_control(
-            self.data, 'TRACK_DA2', out_min=da2_min, out_max=da2_max)
+    def _loop_tracking(self):
+        loop_startt = time.perf_counter()
 
-        if self.fir_short_mimo is None:
-            log.info("Initializing adaptive FIR short MIMO controller")
-            self.fir_short_mimo = pid.AdaptiveFIRShortMIMO(
-                name="tracking",
-                shared_data=self.data,
-                n_taps=20,      # ~0.2 s @ 100 Hz
-                u_max=0.2,
-            )
-            
-        else:
-            log.info("Adaptive FIR short MIMO controller already initialized, keeping existing state")
-                    
-        refresh_startt = time.perf_counter()
-        while True:
-            try:
-                loop_startt = time.perf_counter()
-                da1_buffer.append(self.data['DAQ.piezos_level'][1])
-                da2_buffer.append(self.data['DAQ.piezos_level'][2])
-                if time.time() - last_update_time > self.data['params.PIEZO_DA_LOOP_UPDATE_TIME'][0]:
-                    da1_level_orig = np.median(da1_buffer)
-                    da2_level_orig = np.median(da2_buffer)
-                    da1_buffer.clear()
-                    da2_buffer.clear()
-                    last_update_time = time.time()
-                        
-                opd = float(self.data['Tracker.opd_100'][0])
-                tip = float(self.data['Tracker.tip_10'][0])
-                tilt = float(self.data['Tracker.tilt_10'][0])
+        opd = float(self.data['Tracker.opd_100'][0])
+        tip = float(self.data['Tracker.tip_10'][0])
+        tilt = float(self.data['Tracker.tilt_10'][0])
 
-                phase = utils.opd2phase(opd)
-                tip_target = self.tip_model(phase)
-                tilt_target = self.tilt_model(phase)
-                self.data['Servo.tip_target'][0] = float(tip_target)
-                self.data['Servo.tilt_target'][0] = float(tilt_target)
-                                
-                if not np.isnan(opd):
-                    u_pid_opd = pid_opd_control.update(
-                        control=self.data['DAQ.piezos_level'][0],
-                        setpoint=opd_target,
-                        measurement=opd)
+        if np.isnan(opd):
+            log.error("Tracking lost")
+            self.events['Servo.open_loop'].set()
+            return
 
-                    u_pid_da1 = pid_da1_control.update(
-                        control=self.data['DAQ.piezos_level'][1],
-                        setpoint=tilt_target,
-                        measurement=tilt)
-                    
-                    u_pid_da2 = pid_da2_control.update(
-                        control=self.data['DAQ.piezos_level'][2],
-                        setpoint=tip_target,
-                        measurement=tip)
-                    
-                    e_opd  = opd_target  - opd
-                    e_tip  = tip_target  - tip
-                    e_tilt = tilt_target - tilt
-                    self.data['Servo.e_opd'][0] = float(e_opd)
-                    self.data['Servo.e_tip'][0] = float(e_tip)
-                    self.data['Servo.e_tilt'][0] = float(e_tilt)
+        phase = utils.opd2phase(opd)
+        tip_target = self.tip_model(phase)
+        tilt_target = self.tilt_model(phase)
 
-                    self.data['DAQ.piezos_level'][0] = u_pid_opd
-                    self.data['DAQ.piezos_level'][1] = u_pid_da1
-                    self.data['DAQ.piezos_level'][2] = u_pid_da2
+        self.data['Servo.tip_target'][0] = float(tip_target)
+        self.data['Servo.tilt_target'][0] = float(tilt_target)
 
-                    #if bool(self.data['params.SERVO_DA_LOOP_ENABLED'][0]):
-                    #    self.data['DAQ.piezos_level'][1] = np.clip(
-                    #        u_pid_da1 + u_ff["DA1"], da1_min, da1_max)
-                        
-                    #    self.data['DAQ.piezos_level'][2] = np.clip(
-                    #        u_pid_da2 + u_ff["DA2"], da2_min, da2_max)
+        u_opd = self._pid_opd.update(
+            control=self.data['DAQ.piezos_level'][0],
+            setpoint=self._tracking_opd_target,
+            measurement=opd)
 
-                    #u_ff = self.fir_short_mimo.update(e_opd, e_tip, e_tilt)
+        u_da1 = self._pid_da1.update(
+            control=self.data['DAQ.piezos_level'][1],
+            setpoint=tilt_target,
+            measurement=tilt)
 
-                    #self.data['DAQ.piezos_level'][0] = np.clip(
-                    #    u_pid_opd + u_ff["OPD"], config.PIEZO_V_MIN, config.PIEZO_V_MAX)
+        u_da2 = self._pid_da2.update(
+            control=self.data['DAQ.piezos_level'][2],
+            setpoint=tip_target,
+            measurement=tip)
 
-                    #if bool(self.data['params.SERVO_DA_LOOP_ENABLED'][0]):
-                    #    self.data['DAQ.piezos_level'][1] = np.clip(
-                    #        u_pid_da1 + u_ff["DA1"], da1_min, da1_max)
-                        
-                    #    self.data['DAQ.piezos_level'][2] = np.clip(
-                    #        u_pid_da2 + u_ff["DA2"], da2_min, da2_max)
+        self.data['Servo.e_opd'][0] = float(opd - self._tracking_opd_target)
+        self.data['Servo.e_tip'][0] = float(tip - tip_target)
+        self.data['Servo.e_tilt'][0] = float(tilt - tilt_target)
 
-                    
-                else:
-                    log.error('bad opd value, lost tracking')
-                    self.events['Servo.open_loop'].set()
-                    break
+        self.data['DAQ.piezos_level'][0] = u_opd
+        self.data['DAQ.piezos_level'][1] = u_da1
+        self.data['DAQ.piezos_level'][2] = u_da2
 
+        # periodic refresh
+        if time.perf_counter() - self._tracking_refresh > config.SERVO_NONCRITIC_REFRESH_TIME:
+            self._pid_opd.update_coeffs()
+            self._tracking_refresh = time.perf_counter()
 
-                # non-critic processing
-                if time.perf_counter() - refresh_startt > config.SERVO_NONCRITIC_REFRESH_TIME:
-                    pid_opd_control.update_coeffs()
+        # respect loop timing
+        dt = time.perf_counter() - loop_startt
+        if dt < config.OPD_LOOP_TIME:
+            time.sleep(config.OPD_LOOP_TIME - dt)
 
-                    max_v_diff = self.data['params.PIEZO_DA_LOOP_MAX_V_DIFF'][0]
-                    da1_min = da1_level_orig - max_v_diff
-                    da1_max = da1_level_orig + max_v_diff
-                    da2_min = da2_level_orig - max_v_diff
-                    da2_max = da2_level_orig + max_v_diff
-        
-                    pid_da1_control.update_config(out_min=da1_min, out_max=da1_max)
-                    pid_da2_control.update_config(out_min=da2_min, out_max=da2_max)
-                    
-                    self.poll()
-                    if self.events['Servo.stop'].is_set():
-                        return
-                    if self.events['Servo.open_loop'].is_set():
-                        return
-                    if self.data['Servo.is_lost'][0] == float(True):
-                        return
-                    
-                    refresh_startt = time.perf_counter()
-
-
-                process_time = time.perf_counter() - loop_startt
-                if process_time < config.OPD_LOOP_TIME:
-                    time.sleep(config.OPD_LOOP_TIME - process_time)
-                    
-                self.data['Servo.track_loop_time'][0] = time.perf_counter() - loop_startt
-                
-            except KeyboardInterrupt:
-                log.error('Keyboard interrupt')
-                self.events['Servo.stop'].set()
-                return
-
-            except Exception as e:
-                log.error(f"Exception on tracking: {type(e).__name__}: {e}")
-                log.error("Traceback:\n%s", traceback.format_exc())
-                self.events['Servo.open_loop'].set()
-                return
-
+        self.data['Servo.track_loop_time'][0] = time.perf_counter() - loop_startt
 
     def on_exit_tracking(self, _):
+        self._mode = None
         log.info("<< TRACKING")
 
 
@@ -632,7 +580,7 @@ class Servo(core.Worker):
         
         time.sleep(0.1) # wait for event dispatch
         while True: # wait for nexline move to finish
-            if NexlineState(int(self.data['Nexline.state'])).name != 'MOVING':
+            if NexlineState(int(self.data['Nexline.state'][0])).name != 'MOVING':
                 break
             time.sleep(0.1)
             
@@ -644,53 +592,35 @@ class Servo(core.Worker):
         pass
 
     def on_enter_waiting(self, _):
-        log.info('Waiting')
+        log.info("Waiting")
+        self._mode = "waiting"
+        self._waiting_active = True
 
-        self._center_piezos()
+        self._waiting_start = time.perf_counter()
+        self._waiting_last_norm = time.perf_counter()
 
-        dacontroller = DAController(self.data, self.tip_model, self.tilt_model, mode='walking')
-        
-        # once OPD piezo is centered, a slow triangle move of the
-        # piezo is made during the whole waiting process to enable the
-        # possibility of real time normalization as done during the
-        # walking process.
+        self._dac = DAController(self.data, self.tip_model, self.tilt_model, mode='walking')
 
-        stop_wait = False
+        self.events['Tracker.start_recording'].set()
 
-        loop_startt = time.perf_counter()
-        last_normalization_time = time.perf_counter()
-        self.events['Tracker.start_recording'].set() # start recording tracker data
+    def _loop_waiting(self):
+        if not self._waiting_active:
+            return
 
-        while not stop_wait:
+        t = time.perf_counter() - self._waiting_start
 
-            try:
-                piezo_position = 5. + utils.triangle((time.perf_counter() - loop_startt), config.WAITING_PIEZO_AMPLITUDE, self.data['params.WAITING_PIEZO_PERIOD'])
-            
-                self.data['DAQ.piezos_level'][0] = piezo_position
-                
-                if time.perf_counter() - last_normalization_time > self.data['params.SERVO_WAIT_NORMALIZE_TIME'][0]:
-                    self.events['Tracker.normalize'].set() #
-                    last_normalization_time = time.perf_counter()
+        piezo_position = 5. + utils.triangle(
+            t,
+            config.WAITING_PIEZO_AMPLITUDE,
+            self.data['params.WAITING_PIEZO_PERIOD'])
 
-                dacontroller.update() # update DA levels
-            
-                self.poll()
+        self.data['DAQ.piezos_level'][0] = piezo_position
 
-                loop_time = time.perf_counter() - loop_startt
-                if loop_time < config.OPD_LOOP_TIME:
-                    time.sleep(config.OPD_LOOP_TIME - loop_time)
-                
-            except KeyboardInterrupt:
-                log.error('Keyboard interrupt')
-                self.events['Servo.stop'].set()
-                stop_walk = True
-                break
+        if time.perf_counter() - self._waiting_last_norm > self.data['params.SERVO_WAIT_NORMALIZE_TIME'][0]:
+            self.events['Tracker.normalize'].set()
+            self._waiting_last_norm = time.perf_counter()
 
-            except Exception as e:
-                log.error('Exception at walk_to_opd:\n' + traceback.format_exc())
-                self.events['Servo.stop'].set()
-                stop_walk = True
-                break
+        self._dac.update()
 
     def on_exit_waiting(self, _):
         self.events['Tracker.stop_recording'].set() # stop recording tracker data
@@ -708,170 +638,168 @@ class Servo(core.Worker):
     def on_enter_walking(self, _):
         log.info("Walking to OPD")
 
-        final_opd_target = float(self.data['Servo.opd_target'][0]) # nm
-        opd_start = float(self.data['Tracker.opd_1'][0]) # nm
-        
-        direction = float(np.sign(final_opd_target - opd_start))
-        velocity_target = direction * abs(float(self.data['Servo.velocity_target'][0])) # um/s
-        
-        log.info(f"   Final OPD target: {final_opd_target} nm")
-        log.info(f"   Velocity target: {velocity_target} um/s")
+        self._mode = "walking"
+        self._walking_active = True
+        self._walking_state = "init"
 
-        dacontroller = DAController(self.data, self.tip_model, self.tilt_model, mode='walking')
+        self._dac = DAController(self.data, self.tip_model, self.tilt_model, mode='walking')
+
+        self._walking_start_time = time.perf_counter()
+        self._walking_refresh = time.perf_counter()
+        self._walking_last_norm = time.perf_counter()
+
+        self._walk_direction = np.sign(
+            self.data['Servo.opd_target'][0] - self.data['Tracker.opd_1'][0]
+        )
+
+        self._velocity_target = (
+            self._walk_direction * abs(self.data['Servo.velocity_target'][0])
+        )
+
+        self._step_velocity_adjustment = 1.0
+
+        self._final_target = float(self.data['Servo.opd_target'][0])
+
+        self._pid_walk_opd = pid.get_pid_control(self.data, 'WALK_OPD')
         
-        self._center_piezos()
-        
-        pid_opd_control = pid.get_pid_control(self.data, 'WALK_OPD')
-                
-        # check if piezos are in a correct range
-        if not (4 < self.data['DAQ.piezos_level'][0] < 6):
-            log.error('piezo off range, start with OPD piezo near the central position')
-            self.data['Servo.opd_target'][0] = float(self.data['Tracker.opd_1'][0]) # nm
-            self.dispatch(self.Event.STOP_WALKING)
-            time.sleep(1) # wait for event dispatch
+        self.events['Tracker.start_recording'].set()
+
+
+    def _loop_walking(self):
+        if not self._walking_active:
             return
 
-        move_start_opd = float(self.data['Tracker.opd_1'][0]) # nm
-        move_startt = time.perf_counter()
-        refresh_startt = time.perf_counter()
-        last_update_time = time.perf_counter()
-        last_normalization_time = time.perf_counter()
+        if self._walking_state == "init":
+            self._walking_init_step()
 
-        step_velocity_adjustment_factor = 1.0 # nexline velocity adjustment factor for each step to compensate for piezo contribution, will be updated at each step end based on the estimated velocity error ratio
+        elif self._walking_state == "step":
+            self._walking_start_step()
 
-        self.events['Tracker.start_recording'].set() # start recording tracker data
+        elif self._walking_state == "wait_step":
+            self._walking_update_step()
 
-        stop_walk = False
-        while not stop_walk: # move step by step until reaching the target
+        elif self._walking_state == "final":
+            self._walking_finalize()
             
+    def _walking_init_step(self):
+        self._move_start_opd = float(self.data['Tracker.opd_1'][0])
+        self._move_start_time = time.perf_counter()
 
-            step = direction * self.data['params.NEXLINE_OPD_UPDATE'][0]
+        self._walking_state = "step"
 
-            itarget = float(self.data['Tracker.opd_3'][0]) + step
-            
-            self.data['Servo.opd_target'][0] = float(itarget)
-            self.data['Nexline.moving_velocity'][0] = abs(velocity_target * step_velocity_adjustment_factor) # um/s
-            self.events['Nexline.move'].set()
+    def _walking_start_step(self):
+        step = self._walk_direction * self.data['params.NEXLINE_OPD_UPDATE'][0]
+
+        self._step_target = float(self.data['Tracker.opd_3'][0]) + step
+
+        self.data['Servo.opd_target'][0] = self._step_target
+        self.data['Nexline.moving_velocity'][0] = abs(
+            self._velocity_target * self._step_velocity_adjustment
+        )
+
+        self.events['Nexline.move'].set()
+
+        self._step_start_time = time.perf_counter()
+        self._step_start_opd = float(self.data['Tracker.opd_3'][0])
+        self._step_start_piezo = float(self.data['DAQ.piezos_level'][0])
+
+        self._walking_state = "wait_step"
+
+    def _walking_update_step(self):
+        loop_startt = time.perf_counter()
+
+        opd = float(self.data['Tracker.opd_100'][0])
+
+        # stop handling
+        if self.events['Servo.stop'].is_set():
+            self.dispatch(self.Event.STOP_WALKING)
+            return
+
+        nexline_moving = (
+            NexlineState(int(self.data['Nexline.state'][0])).name == 'MOVING'
+        )
+
+        if (time.perf_counter() - self._step_start_time > 0.5) and (not nexline_moving):
+            self._walking_end_step()
+            return
+
+        estimated_opd = (
+            self._move_start_opd +
+            self._velocity_target * (time.perf_counter() - self._move_start_time) * 1000
+        )
+
+        self.data['Servo.e_opd'][0] = float(opd - estimated_opd)
+        self.data['Servo.e_velocity'][0] = float((float(self.data['Tracker.velocity_3'][0]) / 1000)
+                                                 - self._velocity_target)
+
+        self.data['DAQ.piezos_level'][0] = self._pid_walk_opd.update(  
+            control=self.data['DAQ.piezos_level'][0],
+            setpoint=estimated_opd,
+            measurement=opd,
+        )
+
+        self._dac.update()
+
+        if time.perf_counter() - self._walking_last_norm > self.data['params.SERVO_WALK_NORMALIZE_TIME'][0]:
+            self.events['Tracker.normalize'].set()
+            self._walking_last_norm = time.perf_counter()
+
+        final_target = self._final_target 
+
+        # check if final target got further than final_target
+        if abs(opd - final_target) < config.OPD_TOLERANCE:
+            log.info(f"OPD target reached: {opd}")
+            self._walking_state = "final"
+            return
+        elif self._walk_direction > 0 and opd > final_target:
+            log.info(f"OPD target reached (overshoot): {opd} > {final_target}")
+            self._walking_state = "final"
+            return
+        elif self._walk_direction < 0 and opd < final_target:
+            log.info(f"OPD target reached (overshoot): {opd} < {final_target}")
+            self._walking_state = "final"
+            return
+
+        dt = time.perf_counter() - loop_startt
+        if dt < config.OPD_LOOP_TIME:
+            time.sleep(config.OPD_LOOP_TIME - dt)
         
-            step_startt = time.perf_counter()
-            step_start_opd = float(self.data['Tracker.opd_3'][0])
-            step_start_piezo_level = float(self.data['DAQ.piezos_level'][0])
+    def _walking_end_step(self):
+        step_opd_walked = float(self.data['Tracker.opd_3'][0]) - self._step_start_opd
+        step_expected = self._walk_direction * self.data['params.NEXLINE_OPD_UPDATE'][0]
 
-            while True: # wait for nexline step to finish
-                if stop_walk: break
-                try:
-                    loop_startt = time.perf_counter()
+        if abs(step_opd_walked) < 0.5 * abs(step_expected):
+            self._walking_state = "step"
+            return
 
-                    opd = float(self.data['Tracker.opd_100'][0]) # nm
+        step_time = time.perf_counter() - self._step_start_time
+        step_velocity = step_opd_walked / step_time / 1000.0
 
-                    nexline_is_moving = NexlineState(int(self.data['Nexline.state'][0])).name == 'MOVING'
-                    if time.perf_counter() - step_startt > 0.5: # wait for event dispatch
-                        if not nexline_is_moving:
-                            break
+        ratio = abs(step_velocity / self._velocity_target)
 
-                    #velocity = float(self.data['Tracker.velocity_30'][0]) / 1000. # um/s
-                    #self.data['DAQ.piezos_level'][0] = vel_controller.update(
-                    #    control=self.data['DAQ.piezos_level'][0],
-                    #    setpoint=velocity_target,
-                    #    measurement=velocity)
+        self._step_velocity_adjustment /= ratio
 
-                    #estimated_opd = step_start_opd + velocity_target * (time.perf_counter() - step_startt) * 1000 # nm
-                    estimated_opd = move_start_opd + velocity_target * (time.perf_counter() - move_startt) * 1000 # nm
-                    self.data['Servo.e_opd'][0] = float(estimated_opd - opd)
-                    self.data['Servo.e_velocity'][0] = float(self.data['Tracker.velocity_3'][0] / 1000. - velocity_target)
-                    
-                    
-                    self.data['DAQ.piezos_level'][0] = pid_opd_control.update(
-                        control=self.data['DAQ.piezos_level'][0],
-                        setpoint=estimated_opd,
-                        measurement=opd)
+        self._step_velocity_adjustment = np.clip(
+            self._step_velocity_adjustment, 0.1, 1.9
+        )
 
-                    dacontroller.update() # update DA levels
-                    
-                    if time.perf_counter() - refresh_startt > config.SERVO_NONCRITIC_REFRESH_TIME:
+        log.info(f"Velocity adjustment: {self._step_velocity_adjustment:.3f}")
 
-                        #vel_controller.update_coeffs()
-                        pid_opd_control.update_coeffs()
-                        
-                        refresh_startt = time.perf_counter()
-
-                    if time.perf_counter() - last_normalization_time > self.data['params.SERVO_WALK_NORMALIZE_TIME'][0]:
-                        self.events['Tracker.normalize'].set() #
-                        last_normalization_time = time.perf_counter()
-
-                    if ((np.abs(opd - final_opd_target) < config.OPD_TOLERANCE)
-                        or (direction > 0 and opd >= final_opd_target)
-                        or (direction < 0 and opd <= final_opd_target)):
-                        log.info(f"OPD target reached: {opd} nm")
-                        self.data['Servo.opd_target'][0] = float(final_opd_target)
-                        stop_walk = True
-                        break
-
-                    self.poll()
-                    if self.events['Servo.stop'].is_set():
-                        stop_walk = True
-                        break
-
-                    if self.events['Servo.open_loop'].is_set():
-                        stop_walk = True
-                        break
-
-                    if self.data['Servo.is_lost'][0] == float(True):
-                        stop_walk = True
-                        break
-
-                    process_time = time.perf_counter() - loop_startt
-                    if process_time < config.OPD_LOOP_TIME:
-                        time.sleep(config.OPD_LOOP_TIME - process_time)
-
-                    loop_time = time.perf_counter() - loop_startt
-                    self.data['Servo.walk_loop_time'][0] = loop_time
-                    
-                except KeyboardInterrupt:
-                    log.error('Keyboard interrupt')
-                    self.events['Servo.stop'].set()
-                    stop_walk = True
-                    break
-
-                except Exception as e:
-                    log.error('Exception at walk_to_opd:\n' + traceback.format_exc())
-                    self.events['Servo.stop'].set()
-                    stop_walk = True
-                    break
-                
-            # step ending, adjust nexline velocity to replace the piezo near the center
-            if stop_walk: break
-            
-            # estimate of the nexline velocity
-            step_opd_walked = float(self.data['Tracker.opd_3'][0]) - step_start_opd
-            if abs(step_opd_walked) < 0.5 * abs(step): # sanity check to avoid wrong velocity estimation due to small stepping
-                log.warning(f"Step OPD walked {step_opd_walked} nm is too small, skipping velocity adjustment")
-                continue
-            
-            step_piezo_end = float(self.data['DAQ.piezos_level'][0])
-            step_piezo_diff = (step_piezo_end - 5)
-            step_piezo_walked = step_piezo_diff * config.DAQ_PIEZO_OPD_PER_LEVEL
-            step_time = time.perf_counter() - step_startt
-            step_nexline_velocity = (step_opd_walked - step_piezo_walked) / step_time / 1000. # um/s
-            velocity_ratio = abs(step_nexline_velocity / velocity_target)
-            log.info(f"Walked {step_opd_walked:.2f} nm (piezo contribution {step_piezo_walked:.2f} nm) in {step_time:.1f} s, estimated Nexline velocity {step_nexline_velocity:.2f} um/s, ratio {velocity_ratio:.2%}")
-            step_velocity_adjustment_factor /= velocity_ratio # corrected to obtain the right velocity for the nexline
-            log.info(f"Uncompensated velocity adjustment factor: {step_velocity_adjustment_factor:.3f}")
-            step_velocity_adjustment_factor += (step_piezo_end - 5) / 5 * self.data['params.NEXLINE_VELOCITY_ADJUSTMENT_GAIN'][0]
-            step_velocity_adjustment_factor_clipped = max(0.1, min(1.9, step_velocity_adjustment_factor)) # limit adjustment factor to avoid too much compensation which may cause instability
-            if step_velocity_adjustment_factor != step_velocity_adjustment_factor_clipped:
-                log.warning(f"Velocity adjustment factor {step_velocity_adjustment_factor:.3f} out of bounds, clipped to {step_velocity_adjustment_factor_clipped:.3f}")
-                step_velocity_adjustment_factor = step_velocity_adjustment_factor_clipped
-            log.info(f"Velocity adjustment factor compensated to keep piezo in central zone: {step_velocity_adjustment_factor:.3f}")
-
-        log.info("Finished walking to OPD")
+        self._walking_state = "step"
+        
+    def _walking_finalize(self):
+        self._walking_active = False
         self.dispatch(self.Event.STOP_WALKING)
+        return
 
     def on_exit_walking(self, _):
+        self._mode = None 
+        self._walking_active = False
         log.info("Exiting walking state, stopping Nexline and tracker recording")
+
         self.events['Nexline.stop_moving'].set()
-        self.events['Tracker.stop_recording'].set() # stop recording tracker data
-        time.sleep(1.) # avoid too fast transition to close loop after walk, which may cause instability
+        self.events['Tracker.stop_recording'].set()
+        time.sleep(1.)
         
     def _stop_walking(self, _):
         pass                

@@ -166,10 +166,14 @@ class Viewer(core.Worker):
 
 
     def on_enter_running(self, _):
-        log.info("Viewer entering running (starting Tk mainloop)")
-        self.root.after(100, self.refresh)
-        self.run()  
-        
+        log.info("Viewer entering running")
+
+        # schedule periodic update
+        self.root.after(0, self.refresh)
+
+        # start Tk loop ONCE
+        self.root.mainloop()
+    
 
     # --- small LED widget helpers ---
     def _make_led(self, parent, diameter=12, on_color="#2ecc71", off_color="#c0392b"):
@@ -351,13 +355,6 @@ class Viewer(core.Worker):
         self.val_var = tk.StringVar(value='—')
         ttk.Label(info, textvariable=self.val_var).pack(side=tk.LEFT, padx=5)
 
-    # run
-    def run(self):
-        try:
-            self.root.mainloop()
-        except Exception:
-            pass
-
     def stop(self):
         try:
             self.root.event_generate('<<Shutdown>>', when='tail')
@@ -377,6 +374,7 @@ class Viewer(core.Worker):
     # events
     def _set_event(self, key: str):
         try:
+            log.info(f"SETTING EVENT: {key}")
             self.events[key].set()
         except Exception as e:
             log.error(f"event set '{key}': {e}")

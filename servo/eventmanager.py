@@ -73,6 +73,22 @@ class SharedMemoryEvent:
         if self._owner:
             self.shm.unlink()
 
+    def __getstate__(self):
+        return {
+            "name": self.shm.name
+        }
+
+    def __setstate__(self, state):
+        self.shm = shared_memory.SharedMemory(name=state["name"])
+        self._owner = False
+
+    def __reduce__(self):
+        return (self.__class__._rebuild, (self.shm.name,))
+
+    @classmethod
+    def _rebuild(cls, name):
+        return cls(name=name, create=False)
+
 
 class SharedMemoryEventManager:
     """

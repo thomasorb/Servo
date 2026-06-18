@@ -12,6 +12,7 @@ def run(**kwargs):
         servo = Servo(**kwargs)
         # start servo
         servo.dispatch(servo.Event.START)
+        servo.run()
 
     except KeyboardInterrupt:
         log.error(f'error during run: {traceback.format_exc()}')

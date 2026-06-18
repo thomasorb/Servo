@@ -55,7 +55,7 @@ def main():
     args = parser.parse_args()
 
     try:
-        # ✅ Init logging FIRST (critical)
+        # Init logging FIRST (critical)
         logger.init_logging(
             level=args.log_level,
             log_file=args.log_file,
@@ -64,7 +64,7 @@ def main():
         log = logging.getLogger(__name__)
         log.info(f"CLI args: {args}")
 
-        # ✅ Dispatch
+        # Dispatch
         if args.command == "calib":
             return run.run(mode="calib", nocam=args.nocam, noviewer=args.noviewer)
 
@@ -75,7 +75,6 @@ def main():
         logging.getLogger(__name__).warning("Interrupted by user")
 
     except Exception:
-        # ✅ fallback safe (no recursion, no logger dependency)
         print("Fatal error:")
         traceback.print_exc()
         raise
