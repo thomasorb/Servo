@@ -47,44 +47,57 @@ class DAQ(core.Worker):
         self.last_levels = None
         
     def loop_once(self):
+        self.poll()   
+
         start_time = time.perf_counter()
-        levels = self.data['DAQ.piezos_level'][:3]
-        
-        # smooth level change on piezos
+
+        levels = self.data['DAQ.piezos_level'][:3].copy()
+
         if self.last_levels is None:
-            self.last_levels = levels
+            self.last_levels = levels.copy()
 
+        new_levels = []
+        for ilevel, ilast_level in zip(levels, self.last_levels):
+            if abs(ilevel - ilast_level) > config.DAQ_MAX_LEVEL_CHANGE:
+                if ilevel > ilast_level:
+                    ilevel = ilast_level + config.DAQ_MAX_LEVEL_CHANGE
+                else:
+                    ilevel = ilast_level - config.DAQ_MAX_LEVEL_CHANGE
+            new_levels.append(ilevel)
+
+        levels = np.array(new_levels, dtype=config.DAQ_PIEZO_LEVELS_DTYPE)
+        self.last_levels = levels.copy()
+
+        for ichannel, ilevel in zip(config.DAQ_PIEZO_CHANNELS, levels):
+            try:
+                self.ao_device.a_out(
+                    ichannel, Range.UNI10VOLTS,
+                    AOutFlag.DEFAULT, float(ilevel)
+                )
+            except Exception:
+                log.warning(
+                    f"DAQ error on channel {ichannel}:\n{traceback.format_exc()}"
+                )
+
+        self.data['DAQ.piezos_level_actual'][:3] = levels
+
+        # stable timing 
+        if not hasattr(self, "_next_tick"):
+            self._next_tick = time.perf_counter()
+
+        self._next_tick += config.DAQ_LOOP_TIME
+        sleep_time = self._next_tick - time.perf_counter()
+
+        if sleep_time > 0:
+            time.sleep(sleep_time)
         else:
-            new_levels = list()
-            for ilevel, ilast_level in zip(levels, self.last_levels):
-                if np.abs(ilevel - ilast_level) > config.DAQ_MAX_LEVEL_CHANGE:
-                    if ilevel > ilast_level:
-                        ilevel = ilast_level + config.DAQ_MAX_LEVEL_CHANGE
-                    else:
-                        ilevel = ilast_level - config.DAQ_MAX_LEVEL_CHANGE
-                new_levels.append(ilevel)
-
-            levels = new_levels
-
-            self.last_levels = levels
-
-            for (ichannel, ilevel) in zip(config.DAQ_PIEZO_CHANNELS, levels):
-                try:
-                    self.ao_device.a_out(ichannel, Range.UNI10VOLTS,
-                                         AOutFlag.DEFAULT, float(ilevel))
-                except Exception as e:
-                    log.warning(f"Error at piezo channel {ichannel} and level {ilevel}:\n {traceback.format_exc()}")
-
-            self.data['DAQ.piezos_level_actual'][:3] = np.array(
-                levels, dtype=config.DAQ_PIEZO_LEVELS_DTYPE)
-
-        process_loop_time = time.perf_counter() - start_time
-        time.sleep(config.DAQ_LOOP_TIME - process_loop_time if process_loop_time < config.DAQ_LOOP_TIME else 0)
+            self._next_tick = time.perf_counter()
 
         loop_time = time.perf_counter() - start_time
         self.data['DAQ.loop_time'][0] = loop_time
-        self.data['DAQ.frequency'][0] = 1./loop_time 
-        
+
+        if loop_time > 0:
+            self.data['DAQ.frequency'][0] = 1.0 / loop_time        
         
     def cleanup(self):
         try:

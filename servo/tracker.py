@@ -254,6 +254,8 @@ class Tracker(core.Worker):
             log.warning(f'IR image size changed from {self.ir_image_size} to {_profile_len}. Reinitializing IR image buffers.')
             self._init_ir_image_specs()
             self.record._init_ir_images()
+            self.record.position = 0
+            self.record.full = False
 
         
 
@@ -281,6 +283,9 @@ class Tracker(core.Worker):
         log.info('Normalizing tracker data')
         width = int(self.data['params.PROFILE_WIDTH'][0])
 
+        if not self.is_recording or self.record.position < 100:
+            log.warning("Not enough data for normalization")
+            return
         
         roinorm_min, roinorm_max = self.record.get_normalization_coeffs(width)
         if roinorm_min is None or roinorm_max is None:
@@ -304,7 +309,19 @@ class Tracker(core.Worker):
             self._compute_stats(ifreq)
 
         loop_end_time = time.perf_counter()
-        time.sleep(max(0, 1./config.TRACKER_FREQUENCY - (loop_end_time - self.frame_time)))
+        #time.sleep(max(0, 1./config.TRACKER_FREQUENCY - (loop_end_time - self.frame_time)))
+
+        if not hasattr(self, "_next_tick"):
+            self._next_tick = time.perf_counter()
+            
+        self._next_tick += 1.0 / config.TRACKER_FREQUENCY
+        sleep_time = self._next_tick - time.perf_counter()
+
+        if sleep_time > 0:
+            time.sleep(sleep_time)
+        else:
+            self._next_tick = time.perf_counter()
+    
         self.data['Tracker.frequency'][0] = 1/(time.perf_counter() - self.frame_time)
 
     def cleanup(self):

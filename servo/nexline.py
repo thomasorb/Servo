@@ -40,6 +40,13 @@ class Nexline(core.Worker):
                 NexlineState.STOPPED, action=self._stop),
         }
 
+        self._mode = None
+        self._move_active = False
+        self._move_start_time = 0.0
+
+    def loop_once(self):
+        if self._mode == "moving":
+            self._loop_moving()
 
     def _start(self, _):
         log.info('Starting Nexline')
@@ -179,34 +186,70 @@ class Nexline(core.Worker):
             time.sleep(0.01)
     
     def on_enter_moving(self, _):
-                      
-        #log.info('Moving Nexline')
+        self._mode = "moving"
+        self._move_active = True
+
         opd = self.data['Servo.opd_target'][0] - self.data['Tracker.opd_3'][0]
+
+        self._move_opd = opd
+        self._move_start_time = time.perf_counter()
 
         self.set_velocity(self.data['Nexline.moving_velocity'][0] * np.sign(opd))
 
-        if not np.isnan(opd):        
-            velocity = self.get_velocity() # um/s
-
-            step_nb = self.to_mpd(opd) / 1e3 / self.to_mpd(config.NEXLINE_STEP_SIZE)
-
-            log.info(f'moving at {velocity} um/s with a step size of {config.NEXLINE_STEP_SIZE} um for {opd} nm ({step_nb} steps) (optical)')
-
-            opd_start = self.data['Tracker.opd_3'][0]
-            self.step(step_nb)
-            opd_end = self.data['Tracker.opd_3'][0]
-
-            step_size = abs(opd_end - opd_start) / step_nb
-            log.info(f'moved {abs(opd_end - opd_start)} nm in {step_nb} steps: step size={step_size} nm)')
-            
-        else:
+        if np.isnan(opd):
             log.error(f'bad relative opd: {opd}')
-            
-        self.dispatch(self.Event.STOP_MOVING)
+            self.dispatch(self.Event.STOP_MOVING)
+            return
 
+        self._step_nb = self.to_mpd(opd) / 1e3 / self.to_mpd(config.NEXLINE_STEP_SIZE)
+
+        log.info(f'move planned: opd={opd} nm, steps={self._step_nb}')
+
+        try:
+            self.pidevice.OSM(config.NEXLINE_CHANNEL, self._step_nb)
+        except Exception as e:
+            log.error(f'OSM error: {e}')
+            self.dispatch(self.Event.STOP_MOVING)
+
+    def _loop_moving(self):
+        if not self._move_active:
+            return
+
+        # STOP demandé
+        if self.events['Servo.stop'].is_set():
+            self.dispatch(self.Event.STOP)
+            return
+
+        # STOP_MOVING externe
+        if self.events['Nexline.stop_moving'].is_set():
+            self.dispatch(self.Event.STOP_MOVING)
+            return
+
+        try:
+            moving = self.pidevice.qOSN(config.NEXLINE_CHANNEL)[1]
+        except Exception as e:
+            log.warning(f'qOSN error: {e}')
+            self.dispatch(self.Event.STOP_MOVING)
+            return
+
+        # fin du mouvement
+        if not moving:
+            log.info("Nexline move finished")
+            self.dispatch(self.Event.STOP_MOVING)
+            return
+
+        # timeout safety
+        if (time.perf_counter() - self._move_start_time) > config.NEXLINE_TIMEOUT:
+            log.error("Nexline timeout")
+            self.dispatch(self.Event.STOP_MOVING)
+
+    def on_exit_moving(self, _):
+        self._mode = None
+        self._move_active = False
     
     def _stop_moving(self, _):
         log.info('Nexline move stopping')
+
         try:
             if self.pidevice.qOSN(config.NEXLINE_CHANNEL)[1]:
                 self.pidevice.HLT(config.NEXLINE_CHANNEL)
@@ -214,9 +257,6 @@ class Nexline(core.Worker):
                 log.info('Nexline move halted')
         except Exception as e:
             log.error(f'Exception at Nexline halt: {e}')
-        
-        #self.pidevice.RNP(config.NEXLINE_CHANNEL, 0)
-
 
         
 
